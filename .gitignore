@@ -1,0 +1,12 @@
+/build/
+/sources/
+/research/
+/inputs/
+/tools/toolchains/
+*.apk
+*.img
+*.ko
+*.pcap
+*.pcapng
+*.zip
+__pycache__/

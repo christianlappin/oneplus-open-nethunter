@@ -1,0 +1,245 @@
+diff --git a/Makefile b/Makefile
+index 988a2d4..387c999 100644
+--- a/Makefile
++++ b/Makefile
+@@ -10,7 +10,7 @@ endif
+ 
+ build: bluebinder
+ 
+-bluebinder: bluebinder.c
++bluebinder: bluebinder.c hci_pty.c
+ 	$(CC) $(CFLAGS) -Wall -flto $^ `pkg-config --cflags --libs $(DEPEND_LIBS)` -DUSE_SYSTEMD=$(USE_SYSTEMD) -o $@
+ 
+ install:
+diff --git a/bluebinder.c b/bluebinder.c
+index c6724d7..b62c5b0 100644
+--- a/bluebinder.c
++++ b/bluebinder.c
+@@ -52,6 +52,7 @@
+ #include <gbinder.h>
+ 
+ #include <glib-unix.h>
++#include "hci_pty.h"
+ 
+ #if __BYTE_ORDER == __LITTLE_ENDIAN
+ #define cpu_to_le16(val) (val)
+@@ -221,6 +222,8 @@ struct pending_packet {
+ struct proxy {
+     /* Receive commands, ACL and SCO data */
+     int host_fd;
++    int pty_slave_fd;
++    bool use_pty;
+     gchar host_buf[4096];
+     uint16_t host_len;
+ 
+@@ -752,7 +755,9 @@ setup_vhci(
+     close(rfkill_fd);
+     rfkill_fd = -1;
+ 
+-    proxy->host_fd = open_vhci(HCI_PRIMARY);
++    proxy->host_fd = proxy->use_pty ?
++        bluebinder_open_hci_pty(&proxy->pty_slave_fd, FALSE) :
++        open_vhci(HCI_PRIMARY);
+     if (proxy->host_fd < 0) {
+         fprintf(stderr, "Unable to open virtual device\n");
+         goto exit;
+@@ -897,10 +902,13 @@ bluebinder_callbacks_transact(
+     static unsigned long long local_features_mask = 0;
+     static unsigned long long local_ext_features_page_2_mask = 0;
+     static int env_gotten = 0;
++    static bool broken_err_data_reporting = false;
+     struct proxy *proxy = user_data;
+     const char* iface = gbinder_remote_request_interface(req);
+ 
+     if (!env_gotten) {
++        const char *quirk = getenv("BLUEBINDER_BROKEN_ERR_DATA_REPORTING");
++        broken_err_data_reporting = quirk && !strcmp(quirk, "1");
+         const char *value = getenv("BLUEBINDER_LOCAL_FEATURES_MASK");
+         if (value)
+             local_features_mask = strtoull(value, 0, 16);
+@@ -992,6 +1000,31 @@ bluebinder_callbacks_transact(
+                 packet[0] = 0xFF;
+             }
+ 
++            /* Record command failures without logging addresses or payloads.
++             * Firmware support must be established, never inferred from TX. */
++            if (packet[0] == HCI_EVENT_PKT && count >= 6 &&
++                packet[1] == EVT_CMD_COMPLETE && packet[6]) {
++                fprintf(stderr, "HCI command 0x%04x failed: status=0x%02x\n",
++                        packet[4] | (packet[5] << 8), packet[6]);
++            } else if (packet[0] == HCI_EVENT_PKT && count >= 6 &&
++                       packet[1] == EVT_CMD_STATUS && packet[3]) {
++                fprintf(stderr, "HCI command 0x%04x status=0x%02x\n",
++                        packet[5] | (packet[6] << 8), packet[3]);
++            }
++
++            /* Opt-in equivalent of HCI_QUIRK_BROKEN_ERR_DATA_REPORTING:
++             * HAMILTON firmware advertises command 0x0c5a then returns Unknown
++             * Command (0x01). Hide read/write error-reporting capabilities from
++             * Linux rather than inventing a successful controller response.
++             * HCI Read Local Supported Commands (0x1002): 64 bytes at offset 7.
++             */
++            if (broken_err_data_reporting && packet[0] == HCI_EVENT_PKT &&
++                count >= 70 && packet[1] == EVT_CMD_COMPLETE &&
++                packet[4] == 0x02 && packet[5] == 0x10 && !packet[6]) {
++                packet[7 + 18] &= ~0x0c;
++                fprintf(stderr, "Applied opt-in broken error-data-reporting quirk\n");
++            }
++
+             if (local_features_mask) {
+                 // Command complete
+                 if (packet[0] == HCI_EVENT_PKT && count >= 14 && packet[1] == 0x0e) {
+@@ -1123,9 +1156,11 @@ rfkill_callback(
+ }
+ 
+ void stop_watch(struct proxy *proxy) {
++    if (!proxy->channel) return;
+     g_io_channel_shutdown(proxy->channel, TRUE, NULL);
+     g_io_channel_unref(proxy->channel);
+     proxy->channel = NULL;
++    proxy->host_fd = -1;
+ }
+ 
+ int main(int argc, char *argv[])
+@@ -1134,6 +1169,7 @@ int main(int argc, char *argv[])
+     struct proxy proxy;
+     int status = 0;
+     int err = 0;
++    bool probe_hal = false;
+ 
+     guint sigtrm = 0;
+     guint sigint = 0;
+@@ -1141,6 +1177,18 @@ int main(int argc, char *argv[])
+     GBinderRemoteReply* reply = NULL;
+ 
+     memset(&proxy, 0, sizeof(struct proxy));
++    proxy.host_fd = -1;
++    proxy.pty_slave_fd = -1;
++    for (int i = 1; i < argc; i++) {
++        if (!strcmp(argv[i], "--transport=pty")) {
++            proxy.use_pty = true;
++        } else if (!strcmp(argv[i], "--probe-hal")) {
++            probe_hal = true;
++        } else {
++            fprintf(stderr, "Usage: %s [--transport=pty] [--probe-hal]\n", argv[0]);
++            return 2;
++        }
++    }
+     proxy.own_hci_index = -1;
+     proxy.global_bt_rfkill_index = -1;
+ 
+@@ -1177,7 +1225,14 @@ int main(int argc, char *argv[])
+ 
+     if (!proxy.binder_client) {
+         fprintf(stderr, "Failed to connect to bluetooth binder service\n");
+-        g_main_loop_quit(proxy.loop);
++        err = 1;
++        goto unref;
++    }
++
++    if (probe_hal) {
++        puts("HAL service lookup succeeded; no initialization or HCI device created");
++        gbinder_client_unref(proxy.binder_client);
++        proxy.binder_client = NULL;
+         goto unref;
+     }
+ 
+@@ -1287,9 +1342,10 @@ unref:
+         g_source_remove(proxy.rfkill_watch_id);
+     }
+ 
++    bluebinder_close_hci_pty(&proxy.pty_slave_fd);
+     stop_watch(&proxy);
+ 
+-    close(proxy.host_fd);
++    if (proxy.host_fd >= 0) close(proxy.host_fd);
+ 
+ #if USE_SYSTEMD
+     sd_notify(0,
+diff --git a/hci_pty.c b/hci_pty.c
+new file mode 100644
+index 0000000..cc5d239
+--- /dev/null
++++ b/hci_pty.c
+@@ -0,0 +1,66 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#define _GNU_SOURCE
++#include "hci_pty.h"
++#include <errno.h>
++#include <fcntl.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <sys/ioctl.h>
++#include <termios.h>
++#include <unistd.h>
++
++/* Stable Linux UAPI from drivers/bluetooth/hci_uart.h (not exported by libc). */
++#define HCIUARTSETPROTO _IOW('U', 200, int)
++#define HCIUARTGETDEVICE _IOR('U', 202, int)
++#define HCIUARTSETFLAGS _IOW('U', 203, int)
++#define HCI_UART_RAW_DEVICE 0
++#define HCI_UART_RESET_ON_INIT 1
++#define HCI_UART_H4 0
++
++void bluebinder_close_hci_pty(int *slave_fd)
++{
++    if (*slave_fd >= 0) {
++        int discipline = N_TTY;
++        /* Closing the last slave also unregisters HCI if this ioctl fails. */
++        if (ioctl(*slave_fd, TIOCSETD, &discipline))
++            perror("detach PTY HCI discipline");
++        close(*slave_fd);
++        *slave_fd = -1;
++    }
++}
++
++int bluebinder_open_hci_pty(int *slave_fd, int raw_device)
++{
++    int master = -1, slave = -1, discipline = N_HCI, saved_errno;
++    struct termios term;
++    char path[128];
++    *slave_fd = -1;
++    master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
++    if (master < 0 || grantpt(master) || unlockpt(master)) goto fail;
++    int error = ptsname_r(master, path, sizeof(path));
++    if (error) { errno = error; goto fail; }
++    slave = open(path, O_RDWR | O_NOCTTY | O_CLOEXEC);
++    if (slave < 0 || tcgetattr(slave, &term)) goto fail;
++    cfmakeraw(&term);
++    term.c_cflag |= CLOCAL | CREAD;
++    if (tcsetattr(slave, TCSANOW, &term) ||
++        ioctl(slave, TIOCSETD, &discipline)) goto fail;
++    /* HAL handles firmware and physical UART initialization. H4 has no
++     * vendor setup hook. RESET_ON_INIT avoids an extra reset on close. */
++    unsigned long flags = raw_device ? 1UL << HCI_UART_RAW_DEVICE :
++                                      1UL << HCI_UART_RESET_ON_INIT;
++    if (ioctl(slave, HCIUARTSETFLAGS, flags) ||
++        ioctl(slave, HCIUARTSETPROTO, HCI_UART_H4)) goto fail;
++    int id = ioctl(slave, HCIUARTGETDEVICE, 0);
++    if (id < 0) goto fail;
++    fprintf(stderr, "PTY H4 transport registered hci%d on %s (%s)\n", id,
++            path, raw_device ? "synthetic test" : "HAL backend required");
++    *slave_fd = slave;
++    return master;
++fail:
++    saved_errno = errno;
++    if (slave >= 0) close(slave);
++    if (master >= 0) close(master);
++    errno = saved_errno;
++    return -1;
++}
+diff --git a/hci_pty.h b/hci_pty.h
+new file mode 100644
+index 0000000..4fbad7c
+--- /dev/null
++++ b/hci_pty.h
+@@ -0,0 +1,9 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#ifndef BLUEBINDER_HCI_PTY_H
++#define BLUEBINDER_HCI_PTY_H
++/* Returns a PTY master carrying H4 packets. Keep slave_fd open for its lifetime.
++ * Uses only a newly allocated PTY, never the physical Bluetooth UART.
++ * raw_device is for synthetic transport testing, not BlueZ operation. */
++int bluebinder_open_hci_pty(int *slave_fd, int raw_device);
++void bluebinder_close_hci_pty(int *slave_fd);
++#endif

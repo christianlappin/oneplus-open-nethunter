@@ -1,0 +1,13 @@
+--- a/scripts/usbarsenal
++++ b/scripts/usbarsenal
+@@ -106,8 +106,8 @@
+             bklog "[-] HID Mouse is not supported on you device. Make sure your kernel has HID feature patched and enabled."
+             return 1
+         else
+-            echo "1" > $DIR_ALL_FUNCS/hid.1/protocol
+-            echo "2" > $DIR_ALL_FUNCS/hid.1/subclass
++            echo "2" > $DIR_ALL_FUNCS/hid.1/protocol
++            echo "1" > $DIR_ALL_FUNCS/hid.1/subclass
+             echo "4" > $DIR_ALL_FUNCS/hid.1/report_length
+             echo -n -e '\x05\x01\x09\x02\xa1\x01\x09\x01\xa1\x00\x05\x09\x19\x01\x29\x05\x15\x00\x25\x01\x95\x05\x75\x01\x81\x02\x95\x01\x75\x03\x81\x01\x05\x01\x09\x30\x09\x31\x09\x38\x15\x81\x25\x7f\x75\x08\x95\x03\x81\x06\xc0\xc0' > $DIR_ALL_FUNCS/hid.1/report_desc
+             return 0

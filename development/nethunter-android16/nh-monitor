@@ -1,0 +1,149 @@
+#!/system/bin/sh
+# On-demand monitor session for the OnePlus Open.
+set -eu
+set -o pipefail
+
+BASE=/data/adb/nh-open/wlan
+STATE=/dev/.nh-open-wlan
+PARAM=/sys/module/kiwi_v2/parameters
+STOCK=/vendor_dlkm/lib/modules/qca_cld3_kiwi_v2.ko
+CANDIDATE=$BASE/kiwi_v2.ko
+KERNEL=5.15.180-android13-8-o-01177-gea9ad0c186c5
+STOCK_HASH=b117f692bf9fdd2eecd15d5f50ffc7167e4cc1da7d23f71bb0ec610efd7cfc40
+CANDIDATE_HASH=6e895b099586f384ebc14628889f4a9e0c2e7d495c0f85fd8873e87b220a1f5f
+
+test "$(id -u)" = 0 || { echo 'Run from an Android root shell (su).'; exit 1; }
+
+settings() { /system/bin/settings "$@" | /system/bin/cat; }
+sha() { sha256sum "$1" | cut -d ' ' -f 1; }
+
+worker_alive() {
+    test -f "$STATE/pid" || return 1
+    read -r pid started <"$STATE/pid" || return 1
+    test -r "/proc/$pid/stat" || return 1
+    test "$(awk '{ print $22 }' "/proc/$pid/stat")" = "$started"
+}
+
+restore() {
+    if test -e "$PARAM/nh_monitor_tx_mode"; then
+        echo 0 >"$PARAM/nh_monitor_tx_mode" || return 1
+        iw dev nhmon0 del 2>/dev/null || true
+        for attempt in 1 2 3 4 5; do
+            if rmmod kiwi_v2; then break; fi
+            sleep 1
+        done
+        test ! -e "$PARAM/nh_monitor_tx_mode" || return 1
+    fi
+    if test ! -d /sys/module/kiwi_v2; then
+        insmod "$STOCK" || return 1
+    fi
+    if test -f "$STATE/scan"; then
+        scan=$(cat "$STATE/scan")
+        if test "$scan" = null; then
+            settings delete global wifi_scan_always_enabled || return 1
+        else
+            settings put global wifi_scan_always_enabled "$scan" || return 1
+        fi
+    fi
+    if test -f "$STATE/wifi" && test "$(cat "$STATE/wifi")" = 1; then
+        svc wifi enable || return 1
+    fi
+}
+
+cleanup() {
+    result=$?
+    trap - EXIT HUP INT TERM
+    if restore; then
+        rm -f "$STATE/pid" "$STATE/wifi" "$STATE/scan" "$STATE/stop"
+        rmdir "$STATE"
+        echo 'Stock Wi-Fi driver restored.'
+    else
+        echo 'Wi-Fi restoration failed. Run nh-monitor stop to retry.' >&2
+        rm -f "$STATE/pid"
+        result=1
+    fi
+    exit "$result"
+}
+
+case "${1:-status}" in
+status)
+    if test -e "$PARAM/nh_monitor_tx_mode" && iw dev nhmon0 info 2>/dev/null; then
+        cat "$PARAM/nh_monitor_tx_stats"
+    elif test -d "$STATE"; then
+        echo 'Monitor session is starting or restoring Wi-Fi.'
+    else
+        echo 'Stock Wi-Fi driver active.'
+    fi
+    ;;
+stop)
+    test -d "$STATE" || exit 0
+    touch "$STATE/stop"
+    if ! worker_alive && test -f "$STATE/wifi"; then
+        mkdir "$STATE/recovery" || exit 1
+        if restore; then
+            rm -f "$STATE/pid" "$STATE/wifi" "$STATE/scan" "$STATE/stop"
+            rmdir "$STATE/recovery" "$STATE"
+            echo 'Stock Wi-Fi driver restored.'
+        else
+            rmdir "$STATE/recovery"
+            exit 1
+        fi
+    fi
+    ;;
+run)
+    mode=${2:-passive}
+    frequency=${3:-2412}
+    seconds=${4:-300}
+    case "$mode" in
+        passive) tx=0;;
+        inject) tx=2;;
+        *) echo 'Mode must be passive or inject.' >&2; exit 2;;
+    esac
+    case "$frequency" in [245][0-9][0-9][0-9]) ;; *) exit 2;; esac
+    case "$seconds" in ''|*[!0-9]*) exit 2;; esac
+    test "$seconds" -ge 1 && test "$seconds" -le 1800 || exit 2
+    test "$(uname -r)" = "$KERNEL" || { echo 'Kernel release mismatch.' >&2; exit 1; }
+    test "$(sha "$STOCK")" = "$STOCK_HASH" || exit 1
+    test "$(sha "$CANDIDATE")" = "$CANDIDATE_HASH" || exit 1
+    test -d "$PARAM" && test ! -e "$PARAM/nh_monitor_tx_mode" || exit 1
+    wifi=$(settings get global wifi_on)
+    scan=$(settings get global wifi_scan_always_enabled)
+    case "$wifi" in 0|1) ;; *) exit 1;; esac
+    case "$scan" in 0|1|null) ;; *) exit 1;; esac
+    umask 077
+    mkdir "$STATE" || { echo 'A monitor session is already active.' >&2; exit 1; }
+    printf '%s %s\n' "$$" "$(awk '{ print $22 }' "/proc/$$/stat")" >"$STATE/pid"
+    trap cleanup EXIT
+    trap 'exit 130' HUP INT TERM
+    printf '%s\n' "$wifi" >"$STATE/wifi"
+    printf '%s\n' "$scan" >"$STATE/scan"
+    settings put global wifi_scan_always_enabled 0
+    svc wifi disable
+    sleep 3
+    rmmod kiwi_v2
+    timeout 20 insmod "$CANDIDATE" con_mode=0 nh_monitor_tx_backend=1 \
+        nh_monitor_tx_mode=0 nh_monitor_random_sa=1 nh_monitor_raw_frames=1
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        if iw dev wlan0 info >/dev/null 2>&1; then break; fi
+        sleep 1
+    done
+    ip link set wlan0 up
+    phy=$(iw dev wlan0 info | awk '/wiphy/ { print "phy" $2; exit }')
+    test -n "$phy"
+    iw phy "$phy" interface add nhmon0 type monitor
+    ip link set nhmon0 up
+    echo "$frequency" >"$PARAM/nh_monitor_frequency"
+    echo 1 >"$PARAM/nh_monitor_refresh_rx"
+    test ! -f "$STATE/stop" || exit 0
+    echo "$tx" >"$PARAM/nh_monitor_tx_mode"
+    echo "nhmon0 ready at $frequency MHz in $mode mode for $seconds seconds."
+    end=$(( $(cut -d. -f1 /proc/uptime) + seconds ))
+    while test ! -f "$STATE/stop" && test "$(cut -d. -f1 /proc/uptime)" -lt "$end"; do
+        sleep 1
+    done
+    ;;
+*)
+    echo 'Usage: nh-monitor {status|stop|run [passive|inject] [frequency MHz] [seconds]}'
+    exit 2
+    ;;
+esac

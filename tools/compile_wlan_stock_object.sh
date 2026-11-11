@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+export PATH=/work/tools/toolchains/clang-r450784e/bin:$PATH
+WLAN=/work/sources/oneplus-sm8550-modules/vendor/qcom/opensource/wlan
+cd /work/build/stock-module-env/kernel
+make -j"${BUILD_JOBS:-8}" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+    LD="${WLAN_LINKER:-ld.lld}" \
+    EXTRA_LDFLAGS='--threads=1 --lto-partitions=1' \
+    M="$WLAN/qcacld-3.0" CONFIG_QCA_CLD_WLAN=m CONFIG_ARCH_KALAMA=y CONFIG_CNSS2=y \
+    CONFIG_CNSS_UTILS=y CONFIG_CNSS_GENL=y CONFIG_WCNSS_MEM_PRE_ALLOC=y \
+    CONFIG_NETHUNTER_MONITOR_TX="${NH_MONITOR_TX:-n}" \
+    MODNAME=kiwi_v2 DEVNAME=kiwi_v2 WLAN_PROFILE=kiwi_v2 WLAN_CTRL_NAME=wlan \
+    WLAN_ROOT="$WLAN/qcacld-3.0" \
+    WLAN_COMMON_INC="$WLAN/qca-wifi-host-cmn" WLAN_FW_API="$WLAN/fw-api" \
+    WLAN_CFG_OVERRIDE='CONFIG_CNSS_OUT_OF_TREE=y CONFIG_QCOM_LTE_COEX=y CONFIG_IPA_OFFLOAD=n CONFIG_IPA_OPT_WIFI_DP=n CONFIG_ENABLE_SMMU_S1_TRANSLATION=y CONFIG_SMMU_S1_UNMAP=y CONFIG_BUS_AUTO_SUSPEND=y CONFIG_CNSS_HW_SECURE_DISABLE=y' \
+    CONFIG_NL80211_TESTMODE=y \
+    KCFLAGS='-I/work/sources/oneplus-sm8550-msm/include -I/work/sources/oneplus-sm8550-msm/include/uapi -DCFG80211_SINGLE_NETDEV_MULTI_LINK_SUPPORT -DCFG80211_11BE_BASIC -DCONFIG_NL80211_TESTMODE=1 -DCONFIG_QCOM_MINIDUMP_MODULE=1 -DCONFIG_QCOM_VA_MINIDUMP_MODULE=1 -DCONFIG_QCOM_IOMMU_UTIL_MODULE=1 -DCONFIG_ARM_SMMU_MODULE=1' \
+    "${1:-core/hdd/src/wlan_hdd_p2p.o}"

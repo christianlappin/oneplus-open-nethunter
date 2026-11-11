@@ -1,0 +1,92 @@
+#!/system/bin/sh
+# OnePlus Open rooted NetHunter entry point. No boot-time radio takeover.
+set -eu
+set -o pipefail
+# Binder shell services cannot receive an fd into private /data/adb storage.
+# Relay their output through a pipe before writing our private state/logs.
+settings() { /system/bin/settings "$@" 2>&1 | /system/bin/cat; }
+cmd() { /system/bin/cmd "$@" 2>&1 | /system/bin/cat; }
+dumpsys() { /system/bin/dumpsys "$@" 2>&1 | /system/bin/cat; }
+BASE=/data/adb/nh-open
+ROOT=/data/local/nhsystem/kali-arm64
+BB=/data/data/com.offsec.nethunter/scripts/bin/busybox_nh
+SCRIPT=/data/data/com.offsec.nethunter/scripts/bootkali_init
+STATE=/dev/.nh-open-bt
+test "$(id -u)" = 0 || { echo 'Run from an Android root shell (su).'; exit 1; }
+restore_bt() {
+    test -f "$STATE/active" || return 0
+    if test -f "$STATE/bridge.pid"; then
+        pid=$(cat "$STATE/bridge.pid")
+        if test -r "/proc/$pid/cmdline" && tr '\000' ' ' < "/proc/$pid/cmdline" | grep -q "$BASE/bluebinder/bluebinder"; then
+            kill "$pid" 2>/dev/null || true
+            sleep 2
+        fi
+    fi
+    scan=$(cat "$STATE/scan")
+    if test "$scan" = null; then settings delete global ble_scan_always_enabled;
+    else settings put global ble_scan_always_enabled "$scan"; fi
+    if test "$(cat "$STATE/on")" = 1; then cmd bluetooth_manager enable;
+    else cmd bluetooth_manager disable; fi
+    rm -f "$STATE/active"
+}
+case "${1:-status}" in
+status)
+    echo "SELinux: $(getenforce)"
+    echo "Kernel: $(uname -r)"
+    echo "WLAN driver mode: $(cat /sys/module/kiwi_v2/parameters/con_mode)"
+    if test -f "$STATE/active"; then echo 'Bluetooth owner: NetHunter (temporary lease)';
+    else echo 'Bluetooth owner: Android'; fi
+    "$BB" chroot "$ROOT" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/sbin/iw dev
+    ;;
+shell|exec)
+    action=$1; shift
+    /system/bin/sh "$SCRIPT"
+    if test "$action" = shell; then set -- /bin/bash -l; fi
+    test "$#" -gt 0 || { echo 'Usage: nh-open exec COMMAND [ARG...]'; exit 2; }
+    exec "$BB" chroot "$ROOT" /usr/bin/env -i HOME=/root USER=root LOGNAME=root TERM=xterm-256color LANG=C.UTF-8 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "$@"
+    ;;
+bluetooth-start)
+    lease=${2:-600}
+    case "$lease" in ''|*[!0-9]*) exit 2;; esac
+    test "$lease" -ge 30 && test "$lease" -le 1800 || { echo 'Lease must be 30..1800 seconds.'; exit 2; }
+    test ! -f "$STATE/active" || { echo 'Bluetooth lease already active; stop it first.'; exit 1; }
+    mkdir -p "$STATE"; chmod 700 "$STATE"
+    /system/bin/nohup /system/bin/sh "$0" _bt-worker "$lease" >"$BASE/bluetooth.log" 2>&1 </dev/null &
+    echo "Bluetooth lease starting for $lease seconds. Android pairing is unavailable during the lease."
+    echo "Stop early: $0 bluetooth-stop"
+    ;;
+_bt-worker)
+    lease=$2
+    mkdir "$STATE/lock" || exit 1
+    cleanup() { restore_bt; rmdir "$STATE/lock" 2>/dev/null || true; }
+    trap cleanup EXIT
+    trap 'exit 0' HUP INT TERM
+    test -z "$(ls /sys/class/bluetooth)" || { rmdir "$STATE/lock"; exit 1; }
+    settings get global bluetooth_on >"$STATE/on"
+    settings get global ble_scan_always_enabled >"$STATE/scan"
+    case "$(cat "$STATE/on")" in 0|1) ;; *) exit 1;; esac
+    case "$(cat "$STATE/scan")" in 0|1|null) ;; *) exit 1;; esac
+    echo $$ >"$STATE/worker.pid"
+    touch "$STATE/active"
+    settings put global ble_scan_always_enabled 0
+    cmd bluetooth_manager disable
+    sleep 4
+    dumpsys bluetooth_manager | grep '^  state: OFF$' >/dev/null || exit 1
+    BLUEBINDER_BROKEN_ERR_DATA_REPORTING=1 "$BASE/bluebinder/lib/ld-musl-aarch64.so.1" --library-path "$BASE/bluebinder/lib" "$BASE/bluebinder/bluebinder" --transport=pty &
+    bridge=$!; echo "$bridge" >"$STATE/bridge.pid"
+    # Polling bounds the lease and restores Android if the bridge exits.
+    end=$(( $(date +%s) + lease ))
+    while kill -0 "$bridge" 2>/dev/null && test "$(date +%s)" -lt "$end"; do sleep 2; done
+    ;;
+bluetooth-stop)
+    if test -f "$STATE/worker.pid"; then
+        pid=$(cat "$STATE/worker.pid")
+        if test -r "/proc/$pid/cmdline" && tr '\000' ' ' <"/proc/$pid/cmdline" | grep -q '_bt-worker'; then
+            kill -TERM "$pid"
+            exit 0
+        fi
+    fi
+    restore_bt
+    ;;
+*) echo 'Usage: nh-open {status|shell|exec COMMAND...|bluetooth-start [30..1800 seconds]|bluetooth-stop}'; exit 2;;
+esac

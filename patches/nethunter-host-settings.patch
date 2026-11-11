@@ -1,0 +1,36 @@
+--- a/scripts/bootkali_init
++++ b/scripts/bootkali_init
+@@ -75,8 +75,8 @@
+ ######### [ MOUNTING AND BINDING FILESYSTEM ] #########
+ f_mount_fs_to_kali() {
+ 
+-    $BUSYBOX mount -o remount,suid /data
+-    $BUSYBOX chmod +s "$MNT$CHROOT_EXEC"
++    # Android 16 port: execute as root and preserve Android /data mount flags.
++    # The native root shell does not need a global suid remount.
+ 
+     ######### SET FD ########
+     if [ ! -e "/dev/fd" ] || [ ! -e "/dev/stdin" ] || [ ! -e "/dev/stdout" ] || [ ! -e "/dev/stderr" ]; then
+@@ -94,7 +94,8 @@
+ 
+     ######### SET DEV ########
+     mkdir -p "$MNT/dev"
+-    $BUSYBOX mount -o bind /dev "$MNT/dev" && bklog "[+] mounted /dev"
++    $BUSYBOX mount -o bind /dev "$MNT/dev" &&
++        $BUSYBOX chroot "$MNT" /usr/bin/mount --make-rslave /dev && bklog "[+] mounted private /dev bind"
+ 
+     ######### SET DEV PTS ########
+     $BUSYBOX mount -t devpts devpts "$MNT/dev/pts" && bklog "[+] mounted /dev/pts"
+@@ -143,10 +144,10 @@
+     chmod 664 "$MNT"/etc/resolv.conf
+ 
+     ######### SET NETWORK AND HOSTNAME ########
+-    $BUSYBOX sysctl -w net.ipv4.ip_forward=1
++    # Enable forwarding only when an explicitly requested network service needs it.
+     echo "127.0.0.1		 localhost kali" > "$MNT/etc/hosts"
+     echo "::1				 localhost ip6-localhost ip6-loopback" >> "$MNT/etc/hosts"
+-    echo "kali" > "$MNT/proc/sys/kernel/hostname"
++    # Preserve the shared Android kernel hostname.
+ 
+     ######### Setup done #########
+     bklog "[+] The Kali chroot has been started."

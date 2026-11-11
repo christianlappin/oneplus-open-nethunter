@@ -1,0 +1,1829 @@
+diff --git a/vendor/qcom/opensource/wlan/qca-wifi-host-cmn/dp/wifi3.0/be/dp_be.c b/vendor/qcom/opensource/wlan/qca-wifi-host-cmn/dp/wifi3.0/be/dp_be.c
+index 45cc9ae..38588f1 100644
+--- a/vendor/qcom/opensource/wlan/qca-wifi-host-cmn/dp/wifi3.0/be/dp_be.c
++++ b/vendor/qcom/opensource/wlan/qca-wifi-host-cmn/dp/wifi3.0/be/dp_be.c
+@@ -1,3 +1,6 @@
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++#include "wlan_hdd_nh_tx.h"
++#endif
+ /*
+  * Copyright (c) 2021 The Linux Foundation. All rights reserved.
+  * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
+@@ -1191,8 +1194,12 @@ dp_rxdma_ring_sel_cfg_be(struct dp_soc *soc)
+ 	 * For monitor mode, the packet hdr tlv is enabled later during
+ 	 * filter update
+ 	 */
+-	if (soc->cdp_soc.ol_ops->get_con_mode &&
++	if ((soc->cdp_soc.ol_ops->get_con_mode &&
+ 	    soc->cdp_soc.ol_ops->get_con_mode() == QDF_GLOBAL_MONITOR_MODE)
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	    || hdd_nh_sta_backend_enabled()
++#endif
++	   )
+ 		htt_tlv_filter.rx_packet_offset = soc->rx_mon_pkt_tlv_size;
+ 	else
+ 		htt_tlv_filter.rx_packet_offset = soc->rx_pkt_tlv_size;
+@@ -1295,8 +1302,12 @@ dp_rxdma_ring_sel_cfg_be(struct dp_soc *soc)
+ 	 * For monitor mode, the packet hdr tlv is enabled later during
+ 	 * filter update
+ 	 */
+-	if (soc->cdp_soc.ol_ops->get_con_mode &&
++	if ((soc->cdp_soc.ol_ops->get_con_mode &&
+ 	    soc->cdp_soc.ol_ops->get_con_mode() == QDF_GLOBAL_MONITOR_MODE)
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	    || hdd_nh_sta_backend_enabled()
++#endif
++	   )
+ 		htt_tlv_filter.rx_packet_offset = soc->rx_mon_pkt_tlv_size;
+ 	else
+ 		htt_tlv_filter.rx_packet_offset = soc->rx_pkt_tlv_size;
+diff --git a/vendor/qcom/opensource/wlan/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c b/vendor/qcom/opensource/wlan/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
+index 901876a..bbf80ee 100755
+--- a/vendor/qcom/opensource/wlan/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
++++ b/vendor/qcom/opensource/wlan/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
+@@ -17,6 +17,9 @@
+  * PERFORMANCE OF THIS SOFTWARE.
+  */
+ 
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++#include "wlan_hdd_nh_tx.h"
++#endif
+ #include <wlan_ipa_obj_mgmt_api.h>
+ #include <qdf_types.h>
+ #include <qdf_lock.h>
+@@ -2350,6 +2353,11 @@ static inline bool dp_skip_msi_cfg(struct dp_soc *soc, int ring_type)
+ #ifdef DP_CON_MON_MSI_ENABLED
+ static inline bool dp_skip_msi_cfg(struct dp_soc *soc, int ring_type)
+ {
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	/* This backend uses both normal station TX and full monitor RX. */
++	if (hdd_nh_sta_backend_enabled() && ring_type == RXDMA_MONITOR_STATUS)
++		return false;
++#endif
+ 	if (soc->cdp_soc.ol_ops->get_con_mode &&
+ 	    soc->cdp_soc.ol_ops->get_con_mode() == QDF_GLOBAL_MONITOR_MODE) {
+ 		if (ring_type == REO_DST || ring_type == RXDMA_DST)
+@@ -3163,6 +3171,16 @@ static void dp_soc_set_interrupt_mode(struct dp_soc *soc)
+ 	uint32_t msi_base_data, msi_vector_start;
+ 	int msi_vector_count, ret;
+ 
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	/* The monitor-only path has a complete ring poll implementation.
++	 * Keep NAPI/MSI policy unchanged for ordinary vendor operation.
++	 */
++	if (hdd_nh_sta_backend_enabled()) {
++		soc->intr_mode = DP_INTR_POLL;
++		return;
++	}
++#endif
++
+ 	soc->intr_mode = DP_INTR_INTEGRATED;
+ 
+ 	if (!(soc->wlan_cfg_ctx->napi_enabled) ||
+@@ -3196,6 +3214,10 @@ static QDF_STATUS dp_soc_interrupt_attach(struct cdp_soc_t *txrx_soc);
+ static QDF_STATUS dp_soc_interrupt_attach_wrapper(struct cdp_soc_t *txrx_soc)
+ {
+ 	struct dp_soc *soc = (struct dp_soc *)txrx_soc;
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	if (hdd_nh_sta_backend_enabled())
++		return dp_soc_attach_poll(txrx_soc);
++#endif
+ 
+ 	if (!(soc->wlan_cfg_ctx->napi_enabled) ||
+ 	    (dp_is_monitor_mode_using_poll(soc) &&
+@@ -3511,6 +3533,10 @@ dp_soc_near_full_interrupt_attach(struct dp_soc *soc, int num_irq,
+ #ifdef DP_CON_MON_MSI_SKIP_SET
+ static inline bool dp_skip_rx_mon_ring_mask_set(struct dp_soc *soc)
+ {
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	if (hdd_nh_sta_backend_enabled())
++		return false;
++#endif
+ 	return !!(soc->cdp_soc.ol_ops->get_con_mode() !=
+ 			QDF_GLOBAL_MONITOR_MODE);
+ }
+@@ -15869,9 +15895,13 @@ void *dp_soc_init(struct dp_soc *soc, HTC_HANDLE htc_handle,
+ 	 * interrupt mask. IT SHOULD ALWAYS BE IN THIS ORDER.
+ 	 */
+ 	dp_soc_set_interrupt_mode(soc);
+-	if (soc->cdp_soc.ol_ops->get_con_mode &&
++	if ((soc->cdp_soc.ol_ops->get_con_mode &&
+ 	    soc->cdp_soc.ol_ops->get_con_mode() ==
+-	    QDF_GLOBAL_MONITOR_MODE) {
++	    QDF_GLOBAL_MONITOR_MODE)
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	    || hdd_nh_sta_backend_enabled()
++#endif
++	   ) {
+ 		is_monitor_mode = true;
+ 		soc->curr_rx_pkt_tlv_size = soc->rx_mon_pkt_tlv_size;
+ 	} else {
+@@ -17213,9 +17243,13 @@ static void dp_soc_cfg_init(struct dp_soc *soc)
+ 					       REO_DST_RING_SIZE_QCA6290);
+ 		wlan_cfg_set_raw_mode_war(soc->wlan_cfg_ctx, true);
+ 		soc->ast_override_support = 1;
+-		if (soc->cdp_soc.ol_ops->get_con_mode &&
++		if ((soc->cdp_soc.ol_ops->get_con_mode &&
+ 		    soc->cdp_soc.ol_ops->get_con_mode() ==
+-		    QDF_GLOBAL_MONITOR_MODE) {
++		    QDF_GLOBAL_MONITOR_MODE)
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	    || hdd_nh_sta_backend_enabled()
++#endif
++	   ) {
+ 			int int_ctx;
+ 
+ 			for (int_ctx = 0; int_ctx < WLAN_CFG_INT_NUM_CONTEXTS; int_ctx++) {
+@@ -17230,9 +17264,13 @@ static void dp_soc_cfg_init(struct dp_soc *soc)
+ 		soc->ast_override_support = 1;
+ 		soc->per_tid_basize_max_tid = 8;
+ 
+-		if (soc->cdp_soc.ol_ops->get_con_mode &&
++		if ((soc->cdp_soc.ol_ops->get_con_mode &&
+ 		    soc->cdp_soc.ol_ops->get_con_mode() ==
+-		    QDF_GLOBAL_MONITOR_MODE) {
++		    QDF_GLOBAL_MONITOR_MODE)
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	    || hdd_nh_sta_backend_enabled()
++#endif
++	   ) {
+ 			int int_ctx;
+ 
+ 			for (int_ctx = 0; int_ctx < WLAN_CFG_INT_NUM_CONTEXTS;
+@@ -17776,3 +17814,85 @@ void dp_peer_multipass_list_init(struct dp_vdev *vdev)
+ 	qdf_spinlock_create(&vdev->mpass_peer_mutex);
+ }
+ #endif /* QCA_MULTIPASS_SUPPORT */
++
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++/* Caller holds the psoc operation guard and RTNL across this snapshot. */
++int hdd_nh_dp_rx_state(void *handle, char *buffer)
++{
++	struct dp_soc *soc = handle;
++	struct dp_pdev *pdev;
++	struct dp_mon_pdev *mon;
++	struct dp_vdev *vdev;
++	unsigned int i, len = 0;
++
++	if (!soc || !soc->pdev_list[0] || !soc->monitor_soc)
++		return -ENODEV;
++	pdev = soc->pdev_list[0];
++	mon = pdev->monitor_pdev;
++	if (!mon)
++		return -ENODEV;
++	vdev = mon->mvdev;
++	len = scnprintf(buffer, PAGE_SIZE,
++		"intr=%u initialized=%u configured=%u vdev=%d callback=%u band=%u freq=%u full=%u vdev_timer=%u map=%u,%u,%u\n",
++		soc->intr_mode, qdf_atomic_read(&soc->cmn_init_done),
++		mon->monitor_configured, vdev ? vdev->vdev_id : -1,
++		!!(vdev && vdev->monitor_vdev && vdev->monitor_vdev->osif_rx_mon),
++		mon->mon_chan_band, mon->mon_chan_freq,
++		soc->monitor_soc->full_mon_mode,
++		dp_monitor_is_vdev_timer_running(soc),
++		pdev->ch_band_lmac_id_mapping[REG_BAND_2G],
++		pdev->ch_band_lmac_id_mapping[REG_BAND_5G],
++		pdev->ch_band_lmac_id_mapping[REG_BAND_6G]);
++	len += scnprintf(buffer + len, PAGE_SIZE - len,
++		"rx_tlv=%u monitor_tlv=%u context=%u status_done=%u dest_done=%u mpdu_done=%u mpdu_drop=%u reaped=%u mismatch=%u match=%u status_drop=%u dest_drop=%u invalid_link=%u invalid_desc=%u decap_invalid=%u\n",
++		soc->curr_rx_pkt_tlv_size, soc->rx_mon_pkt_tlv_size,
++		!!(vdev && vdev->osif_vdev),
++		mon->rx_mon_stats.status_ppdu_done,
++		mon->rx_mon_stats.dest_ppdu_done,
++		mon->rx_mon_stats.dest_mpdu_done,
++		mon->rx_mon_stats.dest_mpdu_drop,
++		mon->rx_mon_stats.mon_rx_bufs_reaped_dest,
++		mon->rx_mon_stats.ppdu_id_mismatch,
++		mon->rx_mon_stats.ppdu_id_match,
++		mon->rx_mon_stats.status_ppdu_drop,
++		mon->rx_mon_stats.dest_ppdu_drop,
++		mon->rx_mon_stats.mon_link_desc_invalid,
++		mon->rx_mon_stats.mon_rx_desc_invalid,
++		mon->rx_mon_stats.mpdu_decap_type_invalid);
++	for (i = 0; i < wlan_cfg_get_num_contexts(soc->wlan_cfg_ctx); i++)
++		len += scnprintf(buffer + len, PAGE_SIZE - len,
++			"ctx=%u monitor_mask=%x\n", i,
++			soc->intr_ctx[i].rx_mon_ring_mask);
++	for (i = 0; i < MAX_NUM_LMAC_HW; i++)
++		len += scnprintf(buffer + len, PAGE_SIZE - len,
++			"lmac=%u status=%u buffer=%u destination=%u interrupt=%u\n", i,
++			!!soc->rxdma_mon_status_ring[i].hal_srng,
++			!!soc->rxdma_mon_buf_ring[i].hal_srng,
++			!!soc->rxdma_mon_dst_ring[i].hal_srng,
++			soc->mon_intr_id_lmac_map[i]);
++	return len;
++}
++#endif
++
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++/* Reapply the OEM payload/status filters after channel/hardware setup. */
++int hdd_nh_dp_refresh_monitor_rx(void *handle)
++{
++	struct dp_soc *soc = handle;
++	struct dp_pdev *pdev;
++	struct dp_mon_pdev *mon;
++	QDF_STATUS status;
++
++	if (!soc || !soc->pdev_list[0] || !hdd_nh_sta_backend_enabled())
++		return -ENODEV;
++	pdev = soc->pdev_list[0];
++	mon = pdev->monitor_pdev;
++	if (!mon || !mon->monitor_configured || !mon->mvdev)
++		return -ENODEV;
++	qdf_spin_lock_bh(&mon->mon_lock);
++	dp_mon_filter_setup_mon_mode(pdev);
++	status = dp_mon_filter_update(pdev);
++	qdf_spin_unlock_bh(&mon->mon_lock);
++	return qdf_status_to_os_return(status);
++}
++#endif
+diff --git a/vendor/qcom/opensource/wlan/qca-wifi-host-cmn/dp/wifi3.0/monitor/1.0/dp_rx_mon_dest_1.0.c b/vendor/qcom/opensource/wlan/qca-wifi-host-cmn/dp/wifi3.0/monitor/1.0/dp_rx_mon_dest_1.0.c
+index 9e069fc..cc2e796 100644
+--- a/vendor/qcom/opensource/wlan/qca-wifi-host-cmn/dp/wifi3.0/monitor/1.0/dp_rx_mon_dest_1.0.c
++++ b/vendor/qcom/opensource/wlan/qca-wifi-host-cmn/dp/wifi3.0/monitor/1.0/dp_rx_mon_dest_1.0.c
+@@ -1,3 +1,6 @@
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++#include "wlan_hdd_nh_tx.h"
++#endif
+ /*
+  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
+  * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+@@ -622,6 +625,11 @@ dp_rx_mon_check_n_drop_mpdu(struct dp_pdev *pdev, uint32_t mac_id,
+ 
+ 	if (src_link_id == lmac_id)
+ 		return QDF_STATUS_E_INVAL;
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	if (hdd_nh_sta_backend_enabled())
++		pr_info_ratelimited("NH_MON_DROP source=%u expected=%u freq=%u\n",
++				    src_link_id, lmac_id, mon_pdev->mon_chan_freq);
++#endif
+ 
+ drop_mpdu:
+ 	*rx_bufs_dropped = dp_rx_mon_drop_one_mpdu(pdev, mac_id,
+diff --git a/vendor/qcom/opensource/wlan/qca-wifi-host-cmn/dp/wifi3.0/monitor/dp_mon_filter.c b/vendor/qcom/opensource/wlan/qca-wifi-host-cmn/dp/wifi3.0/monitor/dp_mon_filter.c
+index 3613a62..6a6f2d9 100644
+--- a/vendor/qcom/opensource/wlan/qca-wifi-host-cmn/dp/wifi3.0/monitor/dp_mon_filter.c
++++ b/vendor/qcom/opensource/wlan/qca-wifi-host-cmn/dp/wifi3.0/monitor/dp_mon_filter.c
+@@ -1,3 +1,6 @@
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++#include "wlan_hdd_nh_tx.h"
++#endif
+ /*
+  * Copyright (c) 2020-2021 The Linux Foundation. All rights reserved.
+  * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+@@ -347,6 +350,13 @@ dp_mon_ht2_rx_ring_cfg(struct dp_soc *soc,
+ 		if (!hal_ring_hdl)
+ 			continue;
+ 
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++		if (hdd_nh_sta_backend_enabled())
++			pr_info("NH_MON_FILTER type=%u mac=%u lmac=%u packet=%u fp=%u mo=%u fp_mgmt=%x mo_mgmt=%x\n",
++				hal_ring_type, mac_for_pdev, lmac_id, tlv_filter->packet,
++				tlv_filter->enable_fp, tlv_filter->enable_mo,
++				tlv_filter->fp_mgmt_filter, tlv_filter->mo_mgmt_filter);
++#endif
+ 		status = htt_h2t_rx_ring_cfg(soc->htt_handle, mac_for_pdev,
+ 					     hal_ring_hdl, hal_ring_type,
+ 					     ring_buf_size,
+diff --git a/vendor/qcom/opensource/wlan/qcacld-3.0/Kbuild b/vendor/qcom/opensource/wlan/qcacld-3.0/Kbuild
+index 3b9fb83..5fe3c0a 100755
+--- a/vendor/qcom/opensource/wlan/qcacld-3.0/Kbuild
++++ b/vendor/qcom/opensource/wlan/qcacld-3.0/Kbuild
+@@ -623,6 +623,23 @@ HDD_OBJS += $(HDD_SRC_DIR)/wlan_hdd_wifi_pos_pasn.o
+ endif
+ endif
+ 
++ifeq ($(CONFIG_NETHUNTER_MONITOR_TX),y)
++HDD_OBJS += $(HDD_SRC_DIR)/wlan_hdd_nh_tx.o
++HDD_OBJS += $(HDD_SRC_DIR)/wlan_hdd_nh_wext.o
++CFLAGS_$(HDD_SRC_DIR)/wlan_hdd_main.o += -DCONFIG_NETHUNTER_MONITOR_TX
++CFLAGS_cmn/dp/wifi3.0/dp_main.o += -DCONFIG_NETHUNTER_MONITOR_TX
++CFLAGS_cmn/dp/wifi3.0/be/dp_be.o += -DCONFIG_NETHUNTER_MONITOR_TX
++CFLAGS_core/wma/src/wma_main.o += -DCONFIG_NETHUNTER_MONITOR_TX
++CFLAGS_cmn/dp/wifi3.0/monitor/dp_mon_filter.o += -DCONFIG_NETHUNTER_MONITOR_TX
++CFLAGS_cmn/dp/wifi3.0/monitor/1.0/dp_rx_mon_dest_1.0.o += -DCONFIG_NETHUNTER_MONITOR_TX
++CFLAGS_components/p2p/dispatcher/src/wlan_p2p_ucfg_api.o += -DCONFIG_NETHUNTER_MONITOR_TX
++CFLAGS_components/p2p/core/src/wlan_p2p_off_chan_tx.o += -DCONFIG_NETHUNTER_MONITOR_TX
++CFLAGS_$(HDD_SRC_DIR)/wlan_hdd_cfg80211.o += -DCONFIG_NETHUNTER_MONITOR_TX
++CFLAGS_components/mlme/core/src/wlan_mlme_main.o += -DCONFIG_NETHUNTER_MONITOR_TX
++CFLAGS_core/wma/src/wma_dev_if.o += -DCONFIG_NETHUNTER_MONITOR_TX
++CFLAGS_components/mlme/core/src/wlan_mlme_vdev_mgr_interface.o += -DCONFIG_NETHUNTER_MONITOR_TX
++endif
++
+ $(call add-wlan-objs,hdd,$(HDD_OBJS))
+ 
+ ###### OSIF_SYNC ########
+diff --git a/vendor/qcom/opensource/wlan/qcacld-3.0/components/mlme/core/src/wlan_mlme_main.c b/vendor/qcom/opensource/wlan/qcacld-3.0/components/mlme/core/src/wlan_mlme_main.c
+index a55dcb5..6ebb8e7 100644
+--- a/vendor/qcom/opensource/wlan/qcacld-3.0/components/mlme/core/src/wlan_mlme_main.c
++++ b/vendor/qcom/opensource/wlan/qcacld-3.0/components/mlme/core/src/wlan_mlme_main.c
+@@ -21,6 +21,9 @@
+  */
+ 
+ #include "wlan_mlme_main.h"
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++#include "wlan_hdd_nh_tx.h"
++#endif
+ #include "include/wlan_vdev_mlme.h"
+ #include "cfg_ucfg_api.h"
+ #include "wmi_unified.h"
+@@ -1169,6 +1172,13 @@ static void mlme_init_generic_cfg(struct wlan_objmgr_psoc *psoc,
+ 		cfg_get(psoc, CFG_SAE_CONNECION_RETRIES);
+ 	gen->monitor_mode_concurrency =
+ 		cfg_get(psoc, CFG_MONITOR_MODE_CONCURRENCY);
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	/* Opt-in host-managed STA + full monitor mode. Ordinary vendor
++	 * configuration remains unchanged for the default backend (zero).
++	 */
++	if (hdd_nh_sta_backend_enabled())
++		gen->monitor_mode_concurrency = MONITOR_MODE_CONC_STA_SCAN_MON;
++#endif
+ 	gen->tx_retry_multiplier = cfg_get(psoc, CFG_TX_RETRY_MULTIPLIER);
+ 	gen->enable_he_mcs0_for_6ghz_mgmt =
+ 		cfg_get(psoc, CFG_ENABLE_HE_MCS0_MGMT_6GHZ);
+diff --git a/vendor/qcom/opensource/wlan/qcacld-3.0/components/mlme/core/src/wlan_mlme_vdev_mgr_interface.c b/vendor/qcom/opensource/wlan/qcacld-3.0/components/mlme/core/src/wlan_mlme_vdev_mgr_interface.c
+index ac546e1..e93448d 100644
+--- a/vendor/qcom/opensource/wlan/qcacld-3.0/components/mlme/core/src/wlan_mlme_vdev_mgr_interface.c
++++ b/vendor/qcom/opensource/wlan/qcacld-3.0/components/mlme/core/src/wlan_mlme_vdev_mgr_interface.c
+@@ -2154,7 +2154,23 @@ static struct vdev_mlme_ops ap_mlme_ops = {
+ 	.mlme_vdev_csa_complete = ap_mlme_vdev_csa_complete,
+ };
+ 
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++extern void hdd_nh_monitor_stop_ack(unsigned int vdev_id);
++static QDF_STATUS nh_mon_stop_response(struct vdev_mlme_obj *mlme,
++				       struct vdev_stop_response *rsp)
++{
++	/* Monitor STOP sends DOWN immediately. Only acknowledge the actual
++	 * firmware STOP here; do not replay a STOP event into the INIT state.
++	 */
++	hdd_nh_monitor_stop_ack(rsp->vdev_id);
++	return QDF_STATUS_SUCCESS;
++}
++#endif
++
+ static struct vdev_mlme_ops mon_mlme_ops = {
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	.mlme_vdev_ext_stop_rsp = nh_mon_stop_response,
++#endif
+ 	.mlme_vdev_start_send = mon_mlme_vdev_start_restart_send,
+ 	.mlme_vdev_restart_send = mon_mlme_vdev_start_restart_send,
+ 	.mlme_vdev_start_continue = mon_mlme_start_continue,
+diff --git a/vendor/qcom/opensource/wlan/qcacld-3.0/components/p2p/core/src/wlan_p2p_off_chan_tx.c b/vendor/qcom/opensource/wlan/qcacld-3.0/components/p2p/core/src/wlan_p2p_off_chan_tx.c
+index 188d3e0..09599f3 100644
+--- a/vendor/qcom/opensource/wlan/qcacld-3.0/components/p2p/core/src/wlan_p2p_off_chan_tx.c
++++ b/vendor/qcom/opensource/wlan/qcacld-3.0/components/p2p/core/src/wlan_p2p_off_chan_tx.c
+@@ -22,6 +22,10 @@
+  */
+ 
+ #include <wmi_unified_api.h>
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++#include "wlan_hdd_nh_radiotap.h"
++#include "wmi_unified.h"
++#endif
+ #include <wlan_mgmt_txrx_utils_api.h>
+ #include <wlan_objmgr_psoc_obj.h>
+ #include <wlan_objmgr_peer_obj.h>
+@@ -654,6 +658,47 @@ static uint16_t p2p_get_next_seq_num(struct wlan_objmgr_peer *peer,
+  *
+  * Return: QDF_STATUS_SUCCESS - in case of success
+  */
++/* A monitor's source MAC can belong to its own monitor self-peer.
++ * Always keep the submission and descriptor attached to the real STA peer.
++ * The existing random-MAC management filter handles the source address.
++ */
++static struct wlan_objmgr_peer *nh_p2p_station_peer(
++	struct wlan_objmgr_psoc *psoc, unsigned int vdev_id)
++{
++	struct wlan_objmgr_vdev *vdev;
++	struct wlan_objmgr_peer *peer = NULL;
++	uint8_t pdev_id;
++
++	vdev = wlan_objmgr_get_vdev_by_id_from_psoc(psoc, vdev_id,
++						   WLAN_P2P_ID);
++	if (!vdev)
++		return NULL;
++	if (wlan_vdev_mlme_get_opmode(vdev) == QDF_STA_MODE) {
++		uint8_t *mac = wlan_vdev_mlme_get_mldaddr(vdev);
++
++		pdev_id = wlan_objmgr_pdev_get_pdev_id(wlan_vdev_get_pdev(vdev));
++
++		/* Match the OEM's pre-association MLO self-peer selection. */
++		if (qdf_is_macaddr_zero((struct qdf_mac_addr *)mac))
++			mac = wlan_vdev_mlme_get_macaddr(vdev);
++		peer = wlan_objmgr_get_peer(psoc, pdev_id, mac, WLAN_P2P_ID);
++	}
++	wlan_objmgr_vdev_release_ref(vdev, WLAN_P2P_ID);
++	return peer;
++}
++
++QDF_STATUS p2p_nh_station_peer_check(struct wlan_objmgr_vdev *vdev)
++{
++	struct wlan_objmgr_peer *peer;
++
++	peer = nh_p2p_station_peer(wlan_vdev_get_psoc(vdev),
++				   wlan_vdev_get_id(vdev));
++	if (!peer)
++		return QDF_STATUS_E_NOENT;
++	wlan_objmgr_peer_release_ref(peer, WLAN_P2P_ID);
++	return QDF_STATUS_SUCCESS;
++}
++
+ static QDF_STATUS p2p_populate_mac_header(
+ 	struct tx_action_context *tx_ctx)
+ {
+@@ -678,7 +723,11 @@ static QDF_STATUS p2p_populate_mac_header(
+ 	mac_addr = wh->i_addr1;
+ 	pdev_id = wlan_get_pdev_id_from_vdev_id(psoc, tx_ctx->vdev_id,
+ 						WLAN_P2P_ID);
+-	peer = wlan_objmgr_get_peer(psoc, pdev_id, mac_addr, WLAN_P2P_ID);
++	peer = tx_ctx->nh_monitor_injected ? nh_p2p_station_peer(psoc, tx_ctx->vdev_id) :
++		wlan_objmgr_get_peer(psoc, pdev_id, mac_addr, WLAN_P2P_ID);
++	if (tx_ctx->nh_monitor_injected && !peer) {
++		return QDF_STATUS_E_INVAL;
++	}
+ 	if (!peer) {
+ 		mac_addr = wh->i_addr2;
+ 		peer = wlan_objmgr_get_peer(psoc, pdev_id, mac_addr,
+@@ -710,6 +759,10 @@ static QDF_STATUS p2p_populate_mac_header(
+ 		p2p_err("no valid peer");
+ 		return QDF_STATUS_E_INVAL;
+ 	}
++	if (tx_ctx->nh_preserve_sequence) {
++		wlan_objmgr_peer_release_ref(peer, WLAN_P2P_ID);
++		return QDF_STATUS_SUCCESS;
++	}
+ 	seq_num = (uint16_t)p2p_get_next_seq_num(peer, tx_ctx, wh->i_addr2);
+ 	seq_ctl = (struct wlan_seq_ctl *)(tx_ctx->buf +
+ 			WLAN_SEQ_CTL_OFFSET);
+@@ -1205,6 +1258,21 @@ static QDF_STATUS p2p_mgmt_tx(struct tx_action_context *tx_ctx,
+ 		return QDF_STATUS_E_INVAL;
+ 	}
+ 	p2p_mgmt_set_hw_retry_count(psoc, tx_ctx, &mgmt_param);
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	if (tx_ctx->nh_monitor_injected && tx_ctx->nh_rate) {
++		int index = hdd_nh_rate_index(tx_ctx->nh_rate);
++
++		if (index < 0)
++			return QDF_STATUS_E_INVAL;
++		mgmt_param.tx_params_valid = true;
++		mgmt_param.tx_param.mcs_mask = 1U << index;
++		mgmt_param.tx_param.nss_mask = 1;
++		mgmt_param.tx_param.preamble_type =
++			1U << (index < 4 ? WMI_RATE_PREAMBLE_CCK : WMI_RATE_PREAMBLE_OFDM);
++		mgmt_param.tx_param.frame_type = 0; /* Management, as in WMA. */
++	}
++#endif
++
+ 
+ 	wh = (struct wlan_frame_hdr *)frame;
+ 	mac_addr = wh->i_addr1;
+@@ -1217,7 +1285,12 @@ static QDF_STATUS p2p_mgmt_tx(struct tx_action_context *tx_ctx,
+ 		return QDF_STATUS_E_INVAL;
+ 	}
+ 
+-	peer = wlan_objmgr_get_peer(psoc, pdev_id,  mac_addr, WLAN_P2P_ID);
++	peer = tx_ctx->nh_monitor_injected ? nh_p2p_station_peer(psoc, tx_ctx->vdev_id) :
++		wlan_objmgr_get_peer(psoc, pdev_id, mac_addr, WLAN_P2P_ID);
++	if (tx_ctx->nh_monitor_injected && !peer) {
++		wlan_objmgr_vdev_release_ref(vdev, WLAN_P2P_ID);
++		return QDF_STATUS_E_INVAL;
++	}
+ 	if (!peer) {
+ 		mac_addr = wh->i_addr2;
+ 		peer = wlan_objmgr_get_peer(psoc, pdev_id, mac_addr,
+@@ -1803,6 +1876,12 @@ static QDF_STATUS p2p_populate_rmf_field(struct tx_action_context *tx_ctx,
+  *
+  * Return: QDF_STATUS_SUCCESS - in case of success
+  */
++static bool nh_p2p_raw_frame(const struct tx_action_context *tx)
++{
++	/* The monitor entry point has validated both addresses and length. */
++	return tx->nh_monitor_injected && (tx->buf[0] & 0x0c);
++}
++
+ static QDF_STATUS p2p_execute_tx_action_frame(
+ 	struct tx_action_context *tx_ctx)
+ {
+@@ -1821,6 +1900,19 @@ static QDF_STATUS p2p_execute_tx_action_frame(
+ 	struct p2p_frame_info *frame_info;
+ 	struct wlan_objmgr_vdev *vdev;
+ 
++	/* Keep the original 802.11 bytes and reuse the existing ROC,
++	 * descriptor and completion lifecycle. Management rewrites assume
++	 * a 24-byte management header, which an RTS does not have.
++	 */
++	if (nh_p2p_raw_frame(tx_ctx)) {
++		status = p2p_packet_alloc((uint16_t)buf_len, (void **)&frame,
++					  &packet);
++		if (status != QDF_STATUS_SUCCESS)
++			return status;
++		qdf_mem_copy(frame, tx_ctx->buf, buf_len);
++		goto submit;
++	}
++
+ 	frame_info = &(tx_ctx->frame_info);
+ 	if (frame_info->sub_type == P2P_MGMT_PROBE_RSP) {
+ 		p2p_ie = (uint8_t *)p2p_get_p2pie_from_probe_rsp(tx_ctx);
+@@ -1902,6 +1994,7 @@ static QDF_STATUS p2p_execute_tx_action_frame(
+ 		return status;
+ 	}
+ 
++submit:
+ 	status = p2p_mgmt_tx(tx_ctx, buf_len, packet, frame);
+ 	if (status == QDF_STATUS_SUCCESS) {
+ 		if (tx_ctx->no_ack) {
+@@ -3190,18 +3283,25 @@ QDF_STATUS p2p_process_mgmt_tx(struct tx_action_context *tx_ctx)
+ 		  tx_ctx->buf, tx_ctx->buf_len, tx_ctx->off_chan,
+ 		  tx_ctx->no_cck, tx_ctx->no_ack, tx_ctx->duration);
+ 
+-	status = p2p_get_frame_info(tx_ctx->buf, tx_ctx->buf_len,
+-			&(tx_ctx->frame_info));
+-	if (status != QDF_STATUS_SUCCESS) {
+-		p2p_err("unsupported frame");
+-		status = QDF_STATUS_E_INVAL;
+-		goto fail;
+-	}
++	if (nh_p2p_raw_frame(tx_ctx)) {
++		tx_ctx->frame_info.type = P2P_FRAME_NOT_SUPPORT;
++		tx_ctx->frame_info.sub_type = P2P_MGMT_NOT_SUPPORT;
++		tx_ctx->frame_info.action_type = P2P_ACTION_NOT_SUPPORT;
++		tx_ctx->frame_info.public_action_type = P2P_PUBLIC_ACTION_NOT_SUPPORT;
++	} else {
++		status = p2p_get_frame_info(tx_ctx->buf, tx_ctx->buf_len,
++				&(tx_ctx->frame_info));
++		if (status != QDF_STATUS_SUCCESS) {
++			p2p_err("unsupported frame");
++			status = QDF_STATUS_E_INVAL;
++			goto fail;
++		}
+ 
+-	/* update P2P connection status with tx frame info */
+-	mac_to = &(tx_ctx->buf[DST_MAC_ADDR_OFFSET]);
+-	p2p_tx_update_connection_status(p2p_soc_obj,
+-		&(tx_ctx->frame_info), mac_to);
++		/* update P2P connection status with tx frame info */
++		mac_to = &(tx_ctx->buf[DST_MAC_ADDR_OFFSET]);
++		p2p_tx_update_connection_status(p2p_soc_obj,
++			&(tx_ctx->frame_info), mac_to);
++	}
+ 
+ 	status = p2p_vdev_check_valid(tx_ctx);
+ 	if (status != QDF_STATUS_SUCCESS) {
+diff --git a/vendor/qcom/opensource/wlan/qcacld-3.0/components/p2p/core/src/wlan_p2p_off_chan_tx.h b/vendor/qcom/opensource/wlan/qcacld-3.0/components/p2p/core/src/wlan_p2p_off_chan_tx.h
+index f40f96c..c1646c4 100644
+--- a/vendor/qcom/opensource/wlan/qcacld-3.0/components/p2p/core/src/wlan_p2p_off_chan_tx.h
++++ b/vendor/qcom/opensource/wlan/qcacld-3.0/components/p2p/core/src/wlan_p2p_off_chan_tx.h
+@@ -175,6 +175,9 @@ struct p2p_frame_info {
+  * @tx_timer:       RoC timer
+  * @frame_info:     Frame type information
+  */
++
++QDF_STATUS p2p_nh_station_peer_check(struct wlan_objmgr_vdev *vdev);
++
+ struct tx_action_context {
+ 	qdf_list_node_t node;
+ 	struct p2p_soc_priv_obj *p2p_soc_obj;
+@@ -193,6 +196,10 @@ struct tx_action_context {
+ 	qdf_mc_timer_t tx_timer;
+ 	struct p2p_frame_info frame_info;
+ 	qdf_nbuf_t nbuf;
++	/* Private host queue metadata; never part of firmware or kernel ABI. */
++	bool nh_monitor_injected;
++	bool nh_preserve_sequence;
++	uint8_t nh_rate;
+ };
+ 
+ /**
+diff --git a/vendor/qcom/opensource/wlan/qcacld-3.0/components/p2p/dispatcher/inc/wlan_p2p_ucfg_api.h b/vendor/qcom/opensource/wlan/qcacld-3.0/components/p2p/dispatcher/inc/wlan_p2p_ucfg_api.h
+index 0110441..86756f5 100644
+--- a/vendor/qcom/opensource/wlan/qcacld-3.0/components/p2p/dispatcher/inc/wlan_p2p_ucfg_api.h
++++ b/vendor/qcom/opensource/wlan/qcacld-3.0/components/p2p/dispatcher/inc/wlan_p2p_ucfg_api.h
+@@ -286,6 +286,21 @@ QDF_STATUS ucfg_p2p_mgmt_tx(struct wlan_objmgr_psoc *soc,
+  *
+  * Return: QDF_STATUS_SUCCESS - in case of success
+  */
++
++/* Explicit monitor-only caller; ordinary cfg80211 callers retain defaults. */
++
++QDF_STATUS ucfg_p2p_nh_station_peer_check(struct wlan_objmgr_vdev *vdev);
++
++QDF_STATUS ucfg_p2p_mgmt_tx_nh(struct wlan_objmgr_psoc *soc,
++	struct p2p_mgmt_tx *frame, uint64_t *cookie,
++	struct wlan_objmgr_pdev *pdev, bool preserve_sequence, uint8_t rate);
++
++
++/* Explicit monitor-only caller; ordinary cfg80211 callers retain defaults. */
++QDF_STATUS ucfg_p2p_mgmt_tx_nh(struct wlan_objmgr_psoc *soc,
++	struct p2p_mgmt_tx *frame, uint64_t *cookie,
++	struct wlan_objmgr_pdev *pdev, bool preserve_sequence, uint8_t rate);
++
+ QDF_STATUS ucfg_p2p_mgmt_tx_cancel(struct wlan_objmgr_psoc *soc,
+ 	struct wlan_objmgr_vdev *vdev, uint64_t cookie);
+ 
+diff --git a/vendor/qcom/opensource/wlan/qcacld-3.0/components/p2p/dispatcher/src/wlan_p2p_ucfg_api.c b/vendor/qcom/opensource/wlan/qcacld-3.0/components/p2p/dispatcher/src/wlan_p2p_ucfg_api.c
+index 612396d..f1124d4 100644
+--- a/vendor/qcom/opensource/wlan/qcacld-3.0/components/p2p/dispatcher/src/wlan_p2p_ucfg_api.c
++++ b/vendor/qcom/opensource/wlan/qcacld-3.0/components/p2p/dispatcher/src/wlan_p2p_ucfg_api.c
+@@ -294,9 +294,10 @@ QDF_STATUS ucfg_p2p_cleanup_tx_by_psoc(struct wlan_objmgr_psoc *psoc)
+ 	return p2p_cleanup_tx_sync(obj, NULL);
+ }
+ 
+-QDF_STATUS ucfg_p2p_mgmt_tx(struct wlan_objmgr_psoc *soc,
+-			    struct p2p_mgmt_tx *mgmt_frm, uint64_t *cookie,
+-			    struct wlan_objmgr_pdev *pdev)
++static QDF_STATUS p2p_mgmt_tx_enqueue(struct wlan_objmgr_psoc *soc,
++	struct p2p_mgmt_tx *mgmt_frm, uint64_t *cookie,
++	struct wlan_objmgr_pdev *pdev, bool nh_injected,
++	bool preserve_sequence, uint8_t rate)
+ {
+ 	struct scheduler_msg msg = {0};
+ 	struct p2p_soc_priv_obj *p2p_soc_obj;
+@@ -334,6 +335,10 @@ QDF_STATUS ucfg_p2p_mgmt_tx(struct wlan_objmgr_psoc *soc,
+ 	}
+ 
+ 	*cookie = (uint64_t)id;
++	/* Set on the queue item before publishing it to the scheduler. */
++	tx_action->nh_monitor_injected = nh_injected;
++	tx_action->nh_preserve_sequence = preserve_sequence;
++	tx_action->nh_rate = rate;
+ 	tx_action->p2p_soc_obj = p2p_soc_obj;
+ 	tx_action->vdev_id = mgmt_frm->vdev_id;
+ 	tx_action->chan_freq = mgmt_frm->chan_freq;
+@@ -377,6 +382,29 @@ QDF_STATUS ucfg_p2p_mgmt_tx(struct wlan_objmgr_psoc *soc,
+ 	return status;
+ }
+ 
++
++QDF_STATUS ucfg_p2p_mgmt_tx(struct wlan_objmgr_psoc *soc,
++	struct p2p_mgmt_tx *frame, uint64_t *cookie,
++	struct wlan_objmgr_pdev *pdev)
++{
++	return p2p_mgmt_tx_enqueue(soc, frame, cookie, pdev, false, false, 0);
++}
++
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++QDF_STATUS ucfg_p2p_nh_station_peer_check(struct wlan_objmgr_vdev *vdev)
++{
++	return p2p_nh_station_peer_check(vdev);
++}
++
++QDF_STATUS ucfg_p2p_mgmt_tx_nh(struct wlan_objmgr_psoc *soc,
++	struct p2p_mgmt_tx *frame, uint64_t *cookie,
++	struct wlan_objmgr_pdev *pdev, bool preserve_sequence, uint8_t rate)
++{
++	return p2p_mgmt_tx_enqueue(soc, frame, cookie, pdev, true,
++				   preserve_sequence, rate);
++}
++#endif
++
+ QDF_STATUS ucfg_p2p_mgmt_tx_cancel(struct wlan_objmgr_psoc *soc,
+ 	struct wlan_objmgr_vdev *vdev, uint64_t cookie)
+ {
+diff --git a/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c b/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c
+index f113364..43a2013 100755
+--- a/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c
++++ b/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c
+@@ -48,6 +48,9 @@
+ #include "wlan_hdd_hostapd.h"
+ #include "wlan_hdd_softap_tx_rx.h"
+ #include "wlan_hdd_main.h"
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++#include "wlan_hdd_nh_tx.h"
++#endif
+ #include "wlan_hdd_power.h"
+ #include "wlan_hdd_trace.h"
+ #include "wlan_hdd_tx_rx.h"
+@@ -25936,6 +25939,44 @@ static int wlan_hdd_cfg80211_set_mon_ch(struct wiphy *wiphy,
+ }
+ #endif
+ 
++
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++/* Root-only diagnostic entry point through a module parameter. The stock
++ * cfg80211 core rejects set_monitor_channel when another interface is UP;
++ * this explicitly uses the OEM's supported STA-scan + monitor operation.
++ * Never retune a station that has an active connection.
++ */
++int hdd_nh_set_monitor_frequency(unsigned int frequency)
++{
++	struct hdd_context *hdd_ctx = cds_get_context(QDF_MODULE_ID_HDD);
++	struct ieee80211_channel *channel;
++	struct cfg80211_chan_def chandef;
++	int result;
++
++	if (!hdd_ctx || !hdd_nh_sta_backend_enabled() ||
++	    cds_get_conparam() != QDF_GLOBAL_MISSION_MODE)
++		return -EINVAL;
++	rtnl_lock();
++	if (policy_mgr_mode_specific_connection_count(hdd_ctx->psoc,
++						    PM_STA_MODE, NULL)) {
++		result = -EBUSY;
++		goto out;
++	}
++	channel = ieee80211_get_channel(hdd_ctx->wiphy, frequency);
++	if (!channel || channel->band == NL80211_BAND_6GHZ ||
++	    channel->flags & (IEEE80211_CHAN_DISABLED | IEEE80211_CHAN_NO_IR |
++			      IEEE80211_CHAN_RADAR)) {
++		result = -EINVAL;
++		goto out;
++	}
++	cfg80211_chandef_create(&chandef, channel, NL80211_CHAN_NO_HT);
++	result = wlan_hdd_cfg80211_set_mon_ch(hdd_ctx->wiphy, &chandef);
++out:
++	rtnl_unlock();
++	return result;
++}
++#endif
++
+ #define CNT_DIFF(cur, prev) \
+ 	((cur >= prev) ? (cur - prev) : (cur + (MAX_COUNT - (prev) + 1)))
+ #define MAX_COUNT 0xffffffff
+@@ -27721,3 +27762,43 @@ static struct cfg80211_ops wlan_hdd_cfg80211_ops = {
+ 	.get_link_tid_map_status = wlan_hdd_cfg80211_get_t2lm_mapping_status,
+ #endif
+ };
++
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++int hdd_nh_get_monitor_rx_state(char *buffer)
++{
++	struct hdd_context *hdd_ctx = cds_get_context(QDF_MODULE_ID_HDD);
++	struct osif_psoc_sync *sync;
++	int result;
++
++	if (!hdd_ctx || !hdd_nh_sta_backend_enabled())
++		return -ENODEV;
++	rtnl_lock();
++	result = osif_psoc_sync_op_start(wiphy_dev(hdd_ctx->wiphy), &sync);
++	if (!result) {
++		result = hdd_nh_dp_rx_state(cds_get_context(QDF_MODULE_ID_SOC), buffer);
++		osif_psoc_sync_op_stop(sync);
++	}
++	rtnl_unlock();
++	return result;
++}
++#endif
++
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++int hdd_nh_refresh_monitor_rx(void)
++{
++	struct hdd_context *hdd_ctx = cds_get_context(QDF_MODULE_ID_HDD);
++	struct osif_psoc_sync *sync;
++	int result;
++
++	if (!hdd_ctx || !hdd_nh_sta_backend_enabled())
++		return -ENODEV;
++	rtnl_lock();
++	result = osif_psoc_sync_op_start(wiphy_dev(hdd_ctx->wiphy), &sync);
++	if (!result) {
++		result = hdd_nh_dp_refresh_monitor_rx(cds_get_context(QDF_MODULE_ID_SOC));
++		osif_psoc_sync_op_stop(sync);
++	}
++	rtnl_unlock();
++	return result;
++}
++#endif
+diff --git a/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/src/wlan_hdd_main.c b/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/src/wlan_hdd_main.c
+index e5cad98..1b1a1bf 100755
+--- a/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/src/wlan_hdd_main.c
++++ b/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/src/wlan_hdd_main.c
+@@ -35,6 +35,9 @@
+ #include <linux/firmware.h>
+ #include <linux/kernel.h>
+ #include <wlan_hdd_tx_rx.h>
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++#include "wlan_hdd_nh_tx.h"
++#endif
+ #include <wni_api.h>
+ #include <wlan_hdd_cfg.h>
+ #include <wlan_ptt_sock_svc.h>
+@@ -3016,6 +3019,18 @@ static int __hdd_mon_open(struct net_device *dev)
+ 						     PLD_BUS_WIDTH_VERY_HIGH);
+ 	}
+ 
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	/* The stock monitor adapter is RX-only and never activates its TX
++	 * queues. The optional bounded TX handler needs a live qdisc too.
++	 * Its mode and channel checks still gate every accepted skb.
++	 */
++	if (!ret) {
++		hdd_nh_wext_attach(dev);
++		netif_carrier_on(dev);
++		netif_tx_start_all_queues(dev);
++	}
++#endif
++
+ 	return ret;
+ }
+ 
+@@ -6226,8 +6241,11 @@ static const struct net_device_ops wlan_drv_ops = {
+ };
+ 
+ #ifdef FEATURE_MONITOR_MODE_SUPPORT
+-/* Monitor mode net_device_ops, does not Tx and most of operations. */
++/* Monitor operations; experimental TX is optional and defaults off. */
+ static const struct net_device_ops wlan_mon_drv_ops = {
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	.ndo_start_xmit = hdd_nh_monitor_xmit,
++#endif
+ 	.ndo_open = hdd_mon_open,
+ 	.ndo_stop = hdd_stop,
+ 	.ndo_get_stats = hdd_get_stats,
+@@ -8614,6 +8632,12 @@ QDF_STATUS hdd_stop_adapter_ext(struct hdd_context *hdd_ctx,
+ 		status = hdd_monitor_mode_vdev_status(adapter);
+ 		if (QDF_IS_STATUS_ERROR(status))
+ 			hdd_err_rl("stop failed montior mode");
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++		if (hdd_nh_stop_monitor(adapter->dev)) {
++			hdd_err("Monitor STOP was not acknowledged; refusing vdev DELETE");
++			return QDF_STATUS_E_TIMEOUT;
++		}
++#endif
+ 		sme_delete_mon_session(mac_handle, adapter->vdev_id);
+ 		hdd_vdev_destroy(adapter);
+ 		break;
+@@ -18444,6 +18468,10 @@ int hdd_driver_load(void)
+ 	int errno;
+ 	bool soft_load;
+ 
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	hdd_nh_tx_resume();
++#endif
++
+ 	pr_err("%s: Loading driver v%s\n", WLAN_MODULE_NAME,
+ 	       g_wlan_driver_version);
+ 	hdd_place_marker(NULL, "START LOADING", NULL);
+@@ -18602,6 +18630,10 @@ void hdd_driver_unload(void)
+ 	void *hif_ctx;
+ 	bool soft_unload;
+ 
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	hdd_nh_tx_shutdown();
++#endif
++
+ 	soft_unload = hdd_get_wlan_driver_status();
+ 	if (soft_unload) {
+ 		pr_info("%s: Soft Unloading driver v%s\n", WLAN_MODULE_NAME,
+diff --git a/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/src/wlan_hdd_p2p.c b/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/src/wlan_hdd_p2p.c
+index db60d27..195d34c 100755
+--- a/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/src/wlan_hdd_p2p.c
++++ b/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/src/wlan_hdd_p2p.c
+@@ -280,7 +280,7 @@ static int __wlan_hdd_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
+ 			      const u8 *buf, size_t len, bool no_cck,
+ 			      bool dont_wait_for_ack, u64 *cookie)
+ {
+-	QDF_STATUS status;
++	int status;
+ 	struct net_device *dev = wdev->netdev;
+ 	struct hdd_adapter *adapter = WLAN_HDD_GET_PRIV_PTR(dev);
+ 	struct hdd_context *hdd_ctx = WLAN_HDD_GET_CTX(adapter);
+@@ -401,7 +401,11 @@ off_chan_tx:
+ 		  chan ? chan->center_freq : 0, wait, offchan,
+ 		  dont_wait_for_ack, status, *cookie);
+ 
+-	return 0;
++	/* wlan_cfg80211_mgmt_tx() returns Linux errno, not QDF_STATUS.
++	 * Propagate submission failures instead of reporting false success.
++	 * Success here still does not establish over-the-air transmission.
++	 */
++	return status;
+ }
+ 
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0))
+diff --git a/vendor/qcom/opensource/wlan/qcacld-3.0/core/wma/src/wma_dev_if.c b/vendor/qcom/opensource/wlan/qcacld-3.0/core/wma/src/wma_dev_if.c
+index c12d9b8..253d02a 100755
+--- a/vendor/qcom/opensource/wlan/qcacld-3.0/core/wma/src/wma_dev_if.c
++++ b/vendor/qcom/opensource/wlan/qcacld-3.0/core/wma/src/wma_dev_if.c
+@@ -53,6 +53,9 @@
+ #include "csr_api.h"
+ 
+ #include "wma_internal.h"
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++#include "wlan_hdd_nh_tx.h"
++#endif
+ 
+ #include "wma_ocb.h"
+ #include "cdp_txrx_cfg.h"
+@@ -2757,6 +2760,10 @@ QDF_STATUS wma_vdev_stop_resp_handler(struct vdev_mlme_obj *vdev_mlme,
+ 	}
+ 
+ 	status = wma_handle_vdev_stop_rsp(wma, rsp);
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	/* The target layer has already cancelled STOP_RESPONSE_BIT. */
++	hdd_nh_monitor_stop_ack(rsp->vdev_id);
++#endif
+ 
+ 	return status;
+ }
+diff --git a/vendor/qcom/opensource/wlan/qcacld-3.0/core/wma/src/wma_main.c b/vendor/qcom/opensource/wlan/qcacld-3.0/core/wma/src/wma_main.c
+index 0146f9e..6e6531c 100755
+--- a/vendor/qcom/opensource/wlan/qcacld-3.0/core/wma/src/wma_main.c
++++ b/vendor/qcom/opensource/wlan/qcacld-3.0/core/wma/src/wma_main.c
+@@ -1,3 +1,6 @@
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++#include "wlan_hdd_nh_tx.h"
++#endif
+ /*
+  * Copyright (c) 2013-2021 The Linux Foundation. All rights reserved.
+  * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+@@ -652,7 +655,11 @@ static void wma_set_default_tgt_config(tp_wma_handle wma_handle,
+ 			    &tgt_cfg->max_ndi);
+ 
+ 	con_mode = cds_get_conparam();
+-	if (con_mode == QDF_GLOBAL_MONITOR_MODE)
++	if (con_mode == QDF_GLOBAL_MONITOR_MODE
++#ifdef CONFIG_NETHUNTER_MONITOR_TX
++	    || hdd_nh_sta_backend_enabled()
++#endif
++	   )
+ 		tgt_cfg->rx_decap_mode = CFG_TGT_RX_DECAP_MODE_RAW;
+ 
+ 	if (con_mode == QDF_GLOBAL_FTM_MODE) {
+diff --git a/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/inc/wlan_hdd_nh_tx.h b/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/inc/wlan_hdd_nh_tx.h
+new file mode 100644
+index 0000000..180352c
+--- /dev/null
++++ b/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/inc/wlan_hdd_nh_tx.h
+@@ -0,0 +1,18 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _WLAN_HDD_NH_TX_H
++#define _WLAN_HDD_NH_TX_H
++#include <linux/netdevice.h>
++#include <linux/skbuff.h>
++netdev_tx_t hdd_nh_monitor_xmit(struct sk_buff *skb, struct net_device *dev);
++void hdd_nh_tx_resume(void);
++void hdd_nh_tx_shutdown(void);
++bool hdd_nh_sta_backend_enabled(void);
++int hdd_nh_set_monitor_frequency(unsigned int frequency);
++int hdd_nh_stop_monitor(struct net_device *dev);
++void hdd_nh_monitor_stop_ack(unsigned int vdev_id);
++void hdd_nh_wext_attach(struct net_device *dev);
++int hdd_nh_get_monitor_rx_state(char *buffer);
++int hdd_nh_dp_rx_state(void *handle, char *buffer);
++int hdd_nh_refresh_monitor_rx(void);
++int hdd_nh_dp_refresh_monitor_rx(void *handle);
++#endif
+diff --git a/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/inc/wlan_hdd_nh_policy.h b/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/inc/wlan_hdd_nh_policy.h
+new file mode 100644
+index 0000000..8600de5
+--- /dev/null
++++ b/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/inc/wlan_hdd_nh_policy.h
+@@ -0,0 +1,64 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _WLAN_HDD_NH_POLICY_H
++#define _WLAN_HDD_NH_POLICY_H
++#include "wlan_hdd_nh_radiotap.h"
++
++/* Shared with the host tests: the initial backend supports the self-peer MAC,
++ * management frames on the current channel, and standard ACK semantics.
++ */
++static inline int
++hdd_nh_validate_tx_request_backend(const unsigned char *packet, size_t len,
++			   const unsigned char self[6],
++			   int allow_foreign_source, int allow_raw,
++			   struct hdd_nh_tx_view *view)
++{
++	struct hdd_nh_tx_view parsed;
++	int result;
++	unsigned int i;
++	unsigned char nonzero = 0;
++
++	if (!view || !self)
++		return -EINVAL;
++	view->radiotap_len = 0;
++	view->frame_len = 0;
++	view->tx_flags = 0;
++	view->rate = 0;
++	if (len > 4096)
++		return -EMSGSIZE;
++	result = hdd_nh_parse_radiotap_ex(packet, len, allow_raw, &parsed);
++	if (result)
++		return result;
++	if (!(packet[parsed.radiotap_len] & 0x0c) &&
++	    (packet[parsed.radiotap_len + 1] & 0x03))
++		return -EOPNOTSUPP;
++	if (packet[parsed.radiotap_len + 10] & 1)
++		return -EADDRNOTAVAIL;
++	for (i = 0; i < 6; i++) {
++		nonzero |= packet[parsed.radiotap_len + 10 + i];
++		if (!allow_foreign_source &&
++		    packet[parsed.radiotap_len + 10 + i] != self[i])
++			return -EADDRNOTAVAIL;
++	}
++	if (!nonzero)
++		return -EADDRNOTAVAIL;
++	*view = parsed;
++	return 0;
++}
++
++static inline int
++hdd_nh_validate_tx_request_ex(const unsigned char *packet, size_t len,
++			   const unsigned char self[6], int allow_foreign_source,
++			   struct hdd_nh_tx_view *view)
++{
++	return hdd_nh_validate_tx_request_backend(packet, len, self,
++						 allow_foreign_source, 0, view);
++}
++
++static inline int
++hdd_nh_validate_tx_request(const unsigned char *packet, size_t len,
++			   const unsigned char self[6],
++			   struct hdd_nh_tx_view *view)
++{
++	return hdd_nh_validate_tx_request_ex(packet, len, self, 0, view);
++}
++#endif
+diff --git a/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/inc/wlan_hdd_nh_radiotap.h b/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/inc/wlan_hdd_nh_radiotap.h
+new file mode 100644
+index 0000000..f9c4a3d
+--- /dev/null
++++ b/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/inc/wlan_hdd_nh_radiotap.h
+@@ -0,0 +1,167 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _WLAN_HDD_NH_RADIOTAP_H
++#define _WLAN_HDD_NH_RADIOTAP_H
++
++#ifdef __KERNEL__
++#include <linux/types.h>
++#include <linux/errno.h>
++#else
++#include <stddef.h>
++#include <errno.h>
++#endif
++
++/* Initial management-TX subset: current channel, firmware-selected rate.
++ * Reject unsupported radiotap requests rather than silently ignoring them.
++ * This parser alone does not register a TX callback or transmit any frame.
++ */
++struct hdd_nh_tx_view {
++	size_t radiotap_len;
++	size_t frame_len;
++	unsigned short tx_flags;
++	unsigned char rate; /* Radiotap units of 500 kbit/s; zero means automatic. */
++};
++
++static inline int hdd_nh_rate_index(unsigned char rate)
++{
++	static const unsigned char rates[] = {2, 4, 11, 22, 12, 18, 24, 36,
++					    48, 72, 96, 108};
++	unsigned int i;
++
++	for (i = 0; i < sizeof(rates); i++)
++		if (rates[i] == rate)
++			return i;
++	return -EOPNOTSUPP;
++}
++
++static inline unsigned short hdd_nh_get_le16(const unsigned char *p)
++{
++	return p[0] | ((unsigned short)p[1] << 8);
++}
++
++static inline int
++hdd_nh_parse_radiotap_ex(const unsigned char *packet, size_t len,
++		      int allow_raw,
++		      struct hdd_nh_tx_view *view)
++{
++	unsigned int present;
++	unsigned short header_len, tx_flags = 0;
++	unsigned char flags = 0, rate = 0;
++	size_t offset = 8, frame_len;
++	const unsigned char *frame;
++	/* Fixed body lengths required before existing driver routines may
++	 * inspect an auth algorithm, reason code, or action category/code.
++	 * 255 marks subtypes outside the initial implementation's scope.
++	 */
++	static const unsigned char min_body[16] = {
++		4, 6, 10, 6, 0, 12, 255, 255,
++		12, 0, 2, 6, 2, 2, 2, 255
++	};
++	unsigned char subtype;
++
++	if (!view)
++		return -EINVAL;
++	view->radiotap_len = 0;
++	view->frame_len = 0;
++	view->tx_flags = 0;
++	view->rate = 0;
++	if (!packet || len < 8)
++		return -EMSGSIZE;
++	if (packet[0] != 0)
++		return -EOPNOTSUPP;
++	header_len = hdd_nh_get_le16(packet + 2);
++	if (header_len < 8 || header_len > len)
++		return -EMSGSIZE;
++	present = packet[4] | ((unsigned int)packet[5] << 8) |
++		  ((unsigned int)packet[6] << 16) |
++		  ((unsigned int)packet[7] << 24);
++	/* FLAGS, legacy RATE, TX_FLAGS. Channel overrides, MCS, VHT and
++	 * extension/vendor namespaces require a separate backend.
++	 */
++	if (present & ~((1U << 1) | (1U << 2) | (1U << 15)))
++		return -EOPNOTSUPP;
++	if (present & (1U << 1)) {
++		if (offset >= header_len)
++			return -EMSGSIZE;
++		flags = packet[offset++];
++	}
++	if (present & (1U << 2)) {
++		if (offset >= header_len)
++			return -EMSGSIZE;
++		rate = packet[offset++];
++		if (rate && hdd_nh_rate_index(rate) < 0)
++			return -EOPNOTSUPP;
++	}
++	if (present & (1U << 15)) {
++		offset = (offset + 1) & ~(size_t)1;
++		if (offset + 2 > header_len)
++			return -EMSGSIZE;
++		tx_flags = hdd_nh_get_le16(packet + offset);
++		/* NOACK and NOSEQ are handled explicitly by the STA backend. */
++		if (tx_flags & ~0x0018U)
++			return -EOPNOTSUPP;
++	}
++	if (flags & 0x40) /* BADFCS */
++		return -EINVAL;
++	if (flags & ~0x10U) /* Only the included-FCS indication is supported. */
++		return -EOPNOTSUPP;
++	frame_len = len - header_len;
++	if (flags & 0x10) {
++		if (frame_len < 4)
++			return -EMSGSIZE;
++		frame_len -= 4;
++	}
++	if (frame_len < 2 || frame_len > 2304)
++		return -EMSGSIZE;
++	frame = packet + header_len;
++	if (frame[0] & 3)
++		return -EOPNOTSUPP;
++	subtype = frame[0] >> 4;
++	switch (frame[0] & 0x0c) {
++	case 0:
++		if (min_body[subtype] == 255)
++			return -EOPNOTSUPP;
++		if (frame_len < 24 + (size_t)min_body[subtype])
++			return -EMSGSIZE;
++		if ((frame[1] & 0x44) || (frame[22] & 0x0f))
++			return -EOPNOTSUPP;
++		break;
++	case 4:
++		/* RTS has both receiver and transmitter addresses. */
++		if (!allow_raw || subtype != 11 || (frame[1] & 0x47))
++			return -EOPNOTSUPP;
++		if (frame_len != 16)
++			return -EMSGSIZE;
++		break;
++	case 8: {
++		size_t mac_len = 24;
++
++		if (!allow_raw || subtype == 13)
++			return -EOPNOTSUPP;
++		if ((frame[1] & 3) == 3)
++			mac_len += 6;
++		if (subtype & 8) {
++			mac_len += 2;
++			if (frame[1] & 0x80)
++				mac_len += 4;
++		}
++		if (frame_len < mac_len)
++			return -EMSGSIZE;
++		break;
++	}
++	default:
++		return -EOPNOTSUPP;
++	}
++	view->radiotap_len = header_len;
++	view->frame_len = frame_len;
++	view->tx_flags = tx_flags;
++	view->rate = rate;
++	return 0;
++}
++
++static inline int
++hdd_nh_parse_radiotap(const unsigned char *packet, size_t len,
++		      struct hdd_nh_tx_view *view)
++{
++	return hdd_nh_parse_radiotap_ex(packet, len, 0, view);
++}
++#endif
+diff --git a/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/src/wlan_hdd_nh_tx.c b/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/src/wlan_hdd_nh_tx.c
+new file mode 100644
+index 0000000..fd35e0a
+--- /dev/null
++++ b/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/src/wlan_hdd_nh_tx.c
+@@ -0,0 +1,535 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Experimental management-only monitor TX. Default disabled. */
++#include <linux/module.h>
++#include <linux/etherdevice.h>
++#include <linux/workqueue.h>
++#include "wlan_hdd_includes.h"
++#include "wlan_hdd_main.h"
++#include "wlan_hdd_object_manager.h"
++#include "wlan_hdd_nh_tx.h"
++#include "wlan_hdd_nh_radiotap.h"
++#include "wlan_hdd_nh_policy.h"
++#include "osif_vdev_sync.h"
++#include "wlan_vdev_mlme_api.h"
++#include "wlan_objmgr_peer_obj.h"
++#include "cds_packet.h"
++#include "wma_types.h"
++#include "wlan_cfg80211_p2p.h"
++#include "wlan_p2p_ucfg_api.h"
++#include "wlan_p2p_public_struct.h"
++#include "wlan_mlme_ucfg_api.h"
++#include <linux/rtnetlink.h>
++#include <linux/completion.h>
++#include <linux/mutex.h>
++
++#define NH_QUEUE_LIMIT 32
++#define NH_INFLIGHT_LIMIT 8
++static struct sk_buff_head nh_queue = {
++	.next = (struct sk_buff *)&nh_queue,
++	.prev = (struct sk_buff *)&nh_queue,
++	.lock = __SPIN_LOCK_UNLOCKED(nh_queue.lock),
++};
++static bool nh_closing = true;
++static unsigned int nh_tx_mode; /* 0: disabled, 1: dry-run, 2: firmware TX */
++/* Immutable for a module lifetime: no configuration changes under live vdevs. */
++static unsigned int nh_tx_backend;
++static bool nh_random_sa;
++static bool nh_raw_frames;
++module_param_named(nh_monitor_raw_frames, nh_raw_frames, bool, 0400);
++MODULE_PARM_DESC(nh_monitor_raw_frames, "Enable experimental data and RTS transmission on the station backend");
++module_param_named(nh_monitor_random_sa, nh_random_sa, bool, 0400);
++MODULE_PARM_DESC(nh_monitor_random_sa, "Explicit station-backend opt-in for valid unicast source MACs used by aireplay-ng tests");
++module_param_named(nh_monitor_tx_backend, nh_tx_backend, uint, 0400);
++MODULE_PARM_DESC(nh_monitor_tx_backend, "0 legacy monitor WMA (diagnostic), 1 host-managed station/P2P management path");
++static unsigned long nh_sta_next_tx;
++static atomic64_t nh_sta_queued = ATOMIC64_INIT(0);
++static DEFINE_MUTEX(nh_stop_mutex);
++static DECLARE_COMPLETION(nh_stop_ack);
++static unsigned int nh_stopping_vdev = ~0U;
++static int nh_sta_last_errno;
++module_param_named(nh_monitor_sta_last_errno, nh_sta_last_errno, int, 0400);
++
++static void nh_tx_worker(struct work_struct *work);
++static DECLARE_WORK(nh_work, nh_tx_worker);
++
++bool hdd_nh_sta_backend_enabled(void)
++{
++	return nh_tx_backend == 1;
++}
++
++void hdd_nh_monitor_stop_ack(unsigned int vdev_id)
++{
++	if (READ_ONCE(nh_stopping_vdev) == vdev_id)
++		complete(&nh_stop_ack);
++}
++
++int hdd_nh_stop_monitor(struct net_device *dev)
++{
++	struct hdd_adapter *adapter = WLAN_HDD_GET_PRIV_PTR(dev);
++	struct wlan_objmgr_vdev *vdev;
++	int result = 0;
++
++	if (!hdd_nh_sta_backend_enabled())
++		return 0;
++	WRITE_ONCE(nh_tx_mode, 0);
++	flush_work(&nh_work);
++	vdev = hdd_objmgr_get_vdev_by_user(adapter, WLAN_DP_ID);
++	if (!vdev)
++		return 0;
++	mutex_lock(&nh_stop_mutex);
++	if (QDF_IS_STATUS_SUCCESS(wlan_vdev_is_up_active_state(vdev))) {
++		reinit_completion(&nh_stop_ack);
++		WRITE_ONCE(nh_stopping_vdev, adapter->vdev_id);
++		/* Stop while the host object is still CREATED. Deleting first
++		 * races the STOP response timer and the object's DELETE timer.
++		 */
++		if (QDF_IS_STATUS_ERROR(wlan_vdev_mlme_sm_deliver_evt(vdev,
++						WLAN_VDEV_SM_EV_DOWN, 0, NULL)))
++			result = -EIO;
++		else if (!wait_for_completion_timeout(&nh_stop_ack,
++						      msecs_to_jiffies(3000)))
++			result = -ETIMEDOUT;
++		WRITE_ONCE(nh_stopping_vdev, ~0U);
++	}
++	mutex_unlock(&nh_stop_mutex);
++	hdd_objmgr_put_vdev_by_user(vdev, WLAN_DP_ID);
++	return result;
++}
++
++static int nh_frequency_set(const char *value, const struct kernel_param *kp)
++{
++	unsigned int frequency;
++	int result = kstrtouint(value, 0, &frequency);
++
++	if (result)
++		return result;
++	if (!hdd_nh_sta_backend_enabled() || READ_ONCE(nh_tx_mode))
++		return -EBUSY;
++	return hdd_nh_set_monitor_frequency(frequency);
++}
++
++static const struct kernel_param_ops nh_frequency_ops = {.set = nh_frequency_set};
++module_param_cb(nh_monitor_frequency, &nh_frequency_ops, NULL, 0200);
++static atomic_t nh_inflight = ATOMIC_INIT(0);
++static atomic64_t nh_rejected = ATOMIC64_INIT(0);
++static atomic64_t nh_dry_run = ATOMIC64_INIT(0);
++static atomic64_t nh_submitted = ATOMIC64_INIT(0);
++static atomic64_t nh_submit_error = ATOMIC64_INIT(0);
++static atomic64_t nh_fw_ok = ATOMIC64_INIT(0);
++static atomic64_t nh_fw_error = ATOMIC64_INIT(0);
++static unsigned int nh_last_reject;
++static unsigned int nh_last_freq;
++static unsigned int nh_last_fw_status = ~0U;
++module_param_named(nh_monitor_tx_last_fw_status, nh_last_fw_status, uint, 0400);
++module_param_named(nh_monitor_tx_last_freq, nh_last_freq, uint, 0400);
++module_param_named(nh_monitor_tx_last_reject, nh_last_reject, uint, 0400);
++MODULE_PARM_DESC(nh_monitor_tx_last_reject, "Last rejection stage: 1 initial, 2 flags/global mode, 3 sync, 4 context, 5 vdev, 6 policy, 7 pdev, 8 self peer, 9 destination peer, 10 channel, 11 WMA, 12 inflight, 13 allocation, 14 submit, 25 admission, 26 queue");
++
++static int nh_mode_set(const char *value, const struct kernel_param *kp)
++{
++	unsigned int mode;
++	int result = kstrtouint(value, 0, &mode);
++
++	if (result)
++		return result;
++	if (mode > 2)
++		return -EINVAL;
++	WRITE_ONCE(nh_tx_mode, mode);
++	/* Wait out a running submission when disabling. Frames already owned
++	 * by firmware may still complete; inflight reports that separately.
++	 */
++	if (!mode)
++		flush_work(&nh_work);
++	return 0;
++}
++
++static int nh_mode_get(char *buffer, const struct kernel_param *kp)
++{
++	return scnprintf(buffer, PAGE_SIZE, "%u\n", READ_ONCE(nh_tx_mode));
++}
++
++static const struct kernel_param_ops nh_mode_ops = {
++	.set = nh_mode_set,
++	.get = nh_mode_get,
++};
++module_param_cb(nh_monitor_tx_mode, &nh_mode_ops, NULL, 0600);
++MODULE_PARM_DESC(nh_monitor_tx_mode, "0 disabled (default), 1 validation only, 2 experimental firmware TX");
++
++static int nh_stats_get(char *buffer, const struct kernel_param *kp)
++{
++	return scnprintf(buffer, PAGE_SIZE,
++		"mode=%u closing=%u queued=%u inflight=%d rejected=%lld dry_run=%lld submitted=%lld submit_error=%lld fw_status_ok=%lld fw_status_error=%lld sta_queued=%lld\n",
++		READ_ONCE(nh_tx_mode), READ_ONCE(nh_closing),
++		skb_queue_len(&nh_queue), atomic_read(&nh_inflight),
++		atomic64_read(&nh_rejected), atomic64_read(&nh_dry_run),
++		atomic64_read(&nh_submitted), atomic64_read(&nh_submit_error),
++		atomic64_read(&nh_fw_ok), atomic64_read(&nh_fw_error),
++		atomic64_read(&nh_sta_queued));
++}
++
++static const struct kernel_param_ops nh_stats_ops = { .get = nh_stats_get };
++module_param_cb(nh_monitor_tx_stats, &nh_stats_ops, NULL, 0400);
++
++static int nh_rx_state_get(char *buffer, const struct kernel_param *kp)
++{
++	return hdd_nh_get_monitor_rx_state(buffer);
++}
++
++static const struct kernel_param_ops nh_rx_state_ops = {
++	.get = nh_rx_state_get,
++};
++module_param_cb(nh_monitor_rx_state, &nh_rx_state_ops, NULL, 0400);
++
++static int nh_rx_refresh_set(const char *value, const struct kernel_param *kp)
++{
++	unsigned int requested;
++	int result = kstrtouint(value, 0, &requested);
++
++	if (result)
++		return result;
++	if (requested != 1 || READ_ONCE(nh_tx_mode))
++		return -EINVAL;
++	return hdd_nh_refresh_monitor_rx();
++}
++
++static const struct kernel_param_ops nh_rx_refresh_ops = {
++	.set = nh_rx_refresh_set,
++};
++module_param_cb(nh_monitor_refresh_rx, &nh_rx_refresh_ops, NULL, 0200);
++
++/* The mgmt descriptor owns the QDF packet on successful submission. Its
++ * completion handler unmaps DMA before calling us, then releases its peer
++ * reference afterwards. A firmware status is not independent RF evidence.
++ */
++static QDF_STATUS nh_ota_complete(void *context, qdf_nbuf_t packet,
++				uint32_t status, void *params)
++{
++	WRITE_ONCE(nh_last_fw_status, status);
++	if (!status)
++		atomic64_inc(&nh_fw_ok);
++	else
++		atomic64_inc(&nh_fw_error);
++	qdf_nbuf_free(packet);
++	atomic_dec(&nh_inflight);
++	module_put(THIS_MODULE);
++	return QDF_STATUS_SUCCESS;
++}
++
++/* Use the existing host-managed station and its normal P2P ROC/management
++ * lifecycle. The callee copies the frame before returning; no new firmware
++ * vdev IDs, DMA buffers, or private completion descriptors are manufactured.
++ * Success here means queued, never an independently confirmed RF result.
++ */
++static int nh_station_submit(struct hdd_context *hdd_ctx,
++			     struct net_device *monitor,
++			     struct ieee80211_channel *channel,
++			     const void *frame, size_t length, bool dry_run,
++			     const struct hdd_nh_tx_view *view)
++{
++	struct net_device *station;
++	struct hdd_adapter *adapter;
++	struct osif_vdev_sync *sync;
++	struct wlan_objmgr_vdev *vdev;
++	struct p2p_mgmt_tx params = {0};
++	u64 cookie = 0;
++	int result = -ENODEV;
++
++	station = dev_get_by_name(dev_net(monitor), "wlan0");
++	if (!station)
++		return result;
++	if (station == monitor || station->reg_state != NETREG_REGISTERED ||
++	    !netif_running(station))
++		goto put;
++	adapter = WLAN_HDD_GET_PRIV_PTR(station);
++	if (adapter->hdd_ctx != hdd_ctx || adapter->device_mode != QDF_STA_MODE)
++		goto put;
++	result = osif_vdev_sync_op_start(station, &sync);
++	if (result)
++		goto put;
++	vdev = hdd_objmgr_get_vdev_by_user(adapter, WLAN_OSIF_P2P_ID);
++	if (!vdev) {
++		result = -ENODEV;
++		goto stop;
++	}
++	result = qdf_status_to_os_return(ucfg_p2p_nh_station_peer_check(vdev));
++	if (result)
++		goto release;
++	if (view->rate && hdd_nh_rate_index(view->rate) < 4 &&
++	    channel->band != NL80211_BAND_2GHZ) {
++		result = -EOPNOTSUPP;
++		goto release;
++	}
++	if (dry_run) {
++		result = 0;
++	} else if (time_before(jiffies, nh_sta_next_tx)) {
++		result = -EAGAIN;
++	} else {
++		/* Initial validation: bound scheduler pressure to ten frames/s. */
++		nh_sta_next_tx = jiffies + msecs_to_jiffies(100);
++		params.vdev_id = wlan_vdev_get_id(vdev);
++		params.chan_freq = channel->center_freq;
++		params.wait = 100;
++		params.len = length;
++		params.off_chan = true;
++		params.dont_wait_for_ack = !!(view->tx_flags & 8) ||
++			is_multicast_ether_addr((const uint8_t *)frame + 4);
++		params.buf = frame;
++		result = qdf_status_to_os_return(ucfg_p2p_mgmt_tx_nh(
++			hdd_ctx->psoc, &params, &cookie, wlan_vdev_get_pdev(vdev),
++			!!(view->tx_flags & 0x10), view->rate));
++		if (!result)
++			atomic64_inc(&nh_sta_queued);
++	}
++release:
++	hdd_objmgr_put_vdev_by_user(vdev, WLAN_OSIF_P2P_ID);
++stop:
++	osif_vdev_sync_op_stop(sync);
++put:
++	dev_put(station);
++	WRITE_ONCE(nh_sta_last_errno, result);
++	return result;
++}
++
++static bool nh_process_packet(struct sk_buff *skb)
++{
++	struct net_device *dev = skb->dev;
++	struct hdd_adapter *adapter = WLAN_HDD_GET_PRIV_PTR(dev);
++	struct hdd_context *hdd_ctx;
++	struct osif_vdev_sync *sync;
++	struct wlan_objmgr_vdev *vdev = NULL;
++	struct wlan_objmgr_peer *self_peer = NULL, *destination_peer;
++	struct wlan_objmgr_pdev *pdev;
++	struct ieee80211_channel *channel;
++	struct wlan_channel *operating_channel;
++	struct hdd_nh_tx_view view;
++	void *packet = NULL, *data = NULL, *wma;
++	QDF_STATUS status;
++	bool submitted = false;
++	bool dry_run = false;
++	unsigned int mode = READ_ONCE(nh_tx_mode);
++	unsigned int stage = 1;
++	uint32_t frequency;
++
++	if (!mode || READ_ONCE(nh_closing) ||
++	    dev->reg_state != NETREG_REGISTERED || !netif_running(dev) ||
++	    hdd_nh_parse_radiotap_ex(skb->data, skb->len,
++				    hdd_nh_sta_backend_enabled() && nh_raw_frames, &view))
++		goto reject;
++	/* Metadata is supported only by the explicit station backend. */
++	stage = 2;
++	if (!hdd_nh_sta_backend_enabled() &&
++	    (view.tx_flags || view.rate ||
++	     cds_get_conparam() != QDF_GLOBAL_MONITOR_MODE))
++		goto reject;
++	stage = 3;
++	if (osif_vdev_sync_op_start(dev, &sync))
++		goto reject;
++	hdd_ctx = WLAN_HDD_GET_CTX(adapter);
++	stage = 4;
++	if (wlan_hdd_validate_context(hdd_ctx) ||
++	    adapter->device_mode != QDF_MONITOR_MODE ||
++	    wlan_hdd_validate_vdev_id(adapter->vdev_id))
++		goto stop;
++	vdev = hdd_objmgr_get_vdev_by_user(adapter, WLAN_DP_ID);
++	stage = 5;
++	if (!vdev || QDF_IS_STATUS_ERROR(wlan_vdev_is_up_active_state(vdev)))
++		goto release;
++	/* Initial path uses the monitor vdev's self peer. Address spoofing and
++	 * concurrent STA/monitor operation require a separately audited path.
++	 */
++	stage = 6;
++	if (hdd_nh_validate_tx_request_backend(skb->data, skb->len, dev->dev_addr,
++			 hdd_nh_sta_backend_enabled() && nh_random_sa,
++			 hdd_nh_sta_backend_enabled() && nh_raw_frames, &view))
++		goto release;
++	if (hdd_nh_sta_backend_enabled()) {
++		stage = 27;
++		if (cds_get_conparam() != QDF_GLOBAL_MISSION_MODE ||
++		    !ucfg_mlme_is_sta_mon_conc_supported(hdd_ctx->psoc) ||
++		    READ_ONCE(adapter->monitor_mode_vdev_up_in_progress))
++			goto release;
++		operating_channel = wlan_vdev_mlme_get_bss_chan(vdev);
++		if (!operating_channel)
++			goto release;
++		frequency = READ_ONCE(operating_channel->ch_freq);
++		WRITE_ONCE(nh_last_freq, frequency);
++		channel = ieee80211_get_channel(hdd_ctx->wiphy, frequency);
++		if (!channel || channel->band == NL80211_BAND_6GHZ ||
++		    channel->flags & (IEEE80211_CHAN_DISABLED | IEEE80211_CHAN_NO_IR |
++				      IEEE80211_CHAN_RADAR))
++			goto release;
++		stage = 28;
++		if (nh_station_submit(hdd_ctx, dev, channel,
++				      skb->data + view.radiotap_len,
++				      view.frame_len, mode == 1, &view))
++			goto release;
++		if (mode == 1)
++			atomic64_inc(&nh_dry_run);
++		/* The normal P2P stack owns its own copied frame, not our module
++		 * reference. Release ours after the worker returns in either mode.
++		 */
++		dry_run = true;
++		goto release;
++	}
++	pdev = wlan_vdev_get_pdev(vdev);
++	stage = 7;
++	if (!pdev)
++		goto release;
++	self_peer = wlan_objmgr_get_peer(hdd_ctx->psoc,
++		wlan_objmgr_pdev_get_pdev_id(pdev), (void *)dev->dev_addr,
++		WLAN_MGMT_NB_ID);
++	stage = 8;
++	if (!self_peer || wlan_peer_get_vdev(self_peer) != vdev)
++		goto release;
++	destination_peer = wlan_objmgr_get_peer(hdd_ctx->psoc,
++		wlan_objmgr_pdev_get_pdev_id(pdev),
++		skb->data + view.radiotap_len + 4, WLAN_MGMT_NB_ID);
++	if (destination_peer) {
++		bool same_vdev = wlan_peer_get_vdev(destination_peer) == vdev;
++
++		wlan_objmgr_peer_release_ref(destination_peer, WLAN_MGMT_NB_ID);
++		stage = 9;
++		if (!same_vdev)
++			goto release;
++	}
++	stage = 10;
++	/* cfg80211's monitor-channel setter does not update mon_chan_freq.
++	 * Use the UP vdev's operating channel, not that stale adapter cache.
++	 */
++	operating_channel = wlan_vdev_mlme_get_bss_chan(vdev);
++	if (!operating_channel ||
++	    READ_ONCE(adapter->monitor_mode_vdev_up_in_progress))
++		goto release;
++	frequency = READ_ONCE(operating_channel->ch_freq);
++	WRITE_ONCE(nh_last_freq, frequency);
++	channel = ieee80211_get_channel(hdd_ctx->wiphy, frequency);
++	if (!channel || channel->band == NL80211_BAND_6GHZ ||
++	    channel->flags & (IEEE80211_CHAN_DISABLED | IEEE80211_CHAN_NO_IR |
++			      IEEE80211_CHAN_RADAR))
++		goto release;
++	if (mode == 1) {
++		atomic64_inc(&nh_dry_run);
++		dry_run = true;
++		goto release;
++	}
++	wma = cds_get_context(QDF_MODULE_ID_WMA);
++	stage = 11;
++	if (!wma)
++		goto release;
++	stage = 12;
++	if (atomic_inc_return(&nh_inflight) > NH_INFLIGHT_LIMIT) {
++		atomic_dec(&nh_inflight);
++		goto release;
++	}
++	status = cds_packet_alloc(view.frame_len, &data, &packet);
++	stage = 13;
++	if (QDF_IS_STATUS_ERROR(status)) {
++		atomic_dec(&nh_inflight);
++		goto release;
++	}
++	memcpy(data, skb->data + view.radiotap_len, view.frame_len);
++	/* wma_tx_packet consumes packet on both submission success and failure.
++	 * NULL download callback avoids its synchronous download wait. On
++	 * success the queued module reference transfers to nh_ota_complete.
++	 */
++	status = wma_tx_packet(wma, packet, view.frame_len,
++		TXRX_FRM_802_11_MGMT, ANI_TXDIR_TODS, 7, NULL, data,
++		nh_ota_complete, 0, adapter->vdev_id, false,
++		frequency, RATEID_DEFAULT, 0);
++	stage = 14;
++	if (QDF_IS_STATUS_SUCCESS(status)) {
++		atomic64_inc(&nh_submitted);
++		submitted = true;
++	} else {
++		atomic64_inc(&nh_submit_error);
++		atomic_dec(&nh_inflight);
++	}
++release:
++	if (self_peer)
++		wlan_objmgr_peer_release_ref(self_peer, WLAN_MGMT_NB_ID);
++	if (vdev)
++		hdd_objmgr_put_vdev_by_user(vdev, WLAN_DP_ID);
++stop:
++	osif_vdev_sync_op_stop(sync);
++	if (!submitted && !dry_run) {
++		WRITE_ONCE(nh_last_reject, stage);
++		atomic64_inc(&nh_rejected);
++	}
++	return submitted;
++reject:
++	WRITE_ONCE(nh_last_reject, stage);
++	atomic64_inc(&nh_rejected);
++	return false;
++}
++
++static void nh_tx_worker(struct work_struct *work)
++{
++	struct sk_buff *skb;
++	bool submitted;
++	unsigned int budget = NH_QUEUE_LIMIT;
++	unsigned long flags;
++
++	while (budget-- && (skb = skb_dequeue(&nh_queue))) {
++		submitted = nh_process_packet(skb);
++		dev_put(skb->dev);
++		dev_kfree_skb_any(skb);
++		if (!submitted)
++			module_put(THIS_MODULE);
++	}
++	/* A continuous producer must not make the callback unbounded. The
++	 * queue lock also serializes requeueing with driver shutdown.
++	 */
++	spin_lock_irqsave(&nh_queue.lock, flags);
++	if (!nh_closing && nh_queue.qlen)
++		schedule_work(&nh_work);
++	spin_unlock_irqrestore(&nh_queue.lock, flags);
++}
++
++netdev_tx_t hdd_nh_monitor_xmit(struct sk_buff *skb, struct net_device *dev)
++{
++	unsigned long flags;
++
++	if (!READ_ONCE(nh_tx_mode) || skb->len > 4096 ||
++	    skb_linearize(skb) || !try_module_get(THIS_MODULE)) {
++		WRITE_ONCE(nh_last_reject, 25);
++		atomic64_inc(&nh_rejected);
++		dev_kfree_skb_any(skb);
++		return NETDEV_TX_OK;
++	}
++	spin_lock_irqsave(&nh_queue.lock, flags);
++	if (nh_closing || nh_queue.qlen >= NH_QUEUE_LIMIT) {
++		spin_unlock_irqrestore(&nh_queue.lock, flags);
++		WRITE_ONCE(nh_last_reject, 26);
++		atomic64_inc(&nh_rejected);
++		dev_kfree_skb_any(skb);
++		module_put(THIS_MODULE);
++		return NETDEV_TX_OK;
++	}
++	skb->dev = dev;
++	dev_hold(dev);
++	__skb_queue_tail(&nh_queue, skb);
++	schedule_work(&nh_work);
++	spin_unlock_irqrestore(&nh_queue.lock, flags);
++	return NETDEV_TX_OK;
++}
++
++void hdd_nh_tx_resume(void)
++{
++	WRITE_ONCE(nh_closing, false);
++}
++
++void hdd_nh_tx_shutdown(void)
++{
++	unsigned long flags;
++	struct sk_buff *skb;
++
++	spin_lock_irqsave(&nh_queue.lock, flags);
++	nh_closing = true;
++	spin_unlock_irqrestore(&nh_queue.lock, flags);
++	cancel_work_sync(&nh_work);
++	while ((skb = skb_dequeue(&nh_queue))) {
++		dev_put(skb->dev);
++		dev_kfree_skb_any(skb);
++		module_put(THIS_MODULE);
++	}
++}
+diff --git a/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/src/wlan_hdd_nh_wext.c b/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/src/wlan_hdd_nh_wext.c
+new file mode 100644
+index 0000000..86b0893
+--- /dev/null
++++ b/vendor/qcom/opensource/wlan/qcacld-3.0/core/hdd/src/wlan_hdd_nh_wext.c
+@@ -0,0 +1,75 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Read-only legacy queries used by unmodified Aircrack-ng's Linux backend. */
++#include <net/iw_handler.h>
++#include "wlan_hdd_includes.h"
++#include "wlan_hdd_main.h"
++#include "wlan_hdd_object_manager.h"
++#include "wlan_hdd_nh_tx.h"
++#include "wlan_vdev_mlme_api.h"
++#include "osif_vdev_sync.h"
++
++static int nh_iw_name(struct net_device *dev, struct iw_request_info *info,
++		      union iwreq_data *data, char *extra)
++{
++	strscpy(data->name, "IEEE 802.11", IFNAMSIZ);
++	return 0;
++}
++
++static int nh_iw_mode(struct net_device *dev, struct iw_request_info *info,
++		      union iwreq_data *data, char *extra)
++{
++	data->mode = IW_MODE_MONITOR;
++	return 0;
++}
++
++static int nh_iw_frequency(struct net_device *dev, struct iw_request_info *info,
++			   union iwreq_data *data, char *extra)
++{
++	struct hdd_adapter *adapter = WLAN_HDD_GET_PRIV_PTR(dev);
++	struct wlan_objmgr_vdev *vdev;
++	struct wlan_channel *channel;
++	struct osif_vdev_sync *sync;
++	int result;
++	unsigned int frequency;
++
++	result = osif_vdev_sync_op_start(dev, &sync);
++	if (result)
++		return result;
++	result = -ENODEV;
++	vdev = hdd_objmgr_get_vdev_by_user(adapter, WLAN_DP_ID);
++	if (!vdev)
++		goto stop;
++	channel = wlan_vdev_mlme_get_bss_chan(vdev);
++	if (!channel || READ_ONCE(adapter->monitor_mode_vdev_up_in_progress))
++		goto release;
++	frequency = READ_ONCE(channel->ch_freq);
++	if (!frequency)
++		goto release;
++	data->freq.m = frequency;
++	data->freq.e = 6;
++	data->freq.i = ieee80211_frequency_to_channel(frequency);
++	data->freq.flags = IW_FREQ_FIXED;
++	result = 0;
++release:
++	hdd_objmgr_put_vdev_by_user(vdev, WLAN_DP_ID);
++stop:
++	osif_vdev_sync_op_stop(sync);
++	return result;
++}
++
++static const iw_handler nh_iw_handlers[] = {
++	[SIOCGIWNAME - SIOCIWFIRST] = nh_iw_name,
++	[SIOCGIWMODE - SIOCIWFIRST] = nh_iw_mode,
++	[SIOCGIWFREQ - SIOCIWFIRST] = nh_iw_frequency,
++};
++
++static const struct iw_handler_def nh_iw_definition = {
++	.num_standard = ARRAY_SIZE(nh_iw_handlers),
++	.standard = nh_iw_handlers,
++};
++
++void hdd_nh_wext_attach(struct net_device *dev)
++{
++	if (hdd_nh_sta_backend_enabled())
++		dev->wireless_handlers = &nh_iw_definition;
++}
