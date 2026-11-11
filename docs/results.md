@@ -10,13 +10,14 @@ Target was a North American CPH2551 running OxygenOS 16.0.3.505(EX01) and stock 
 | Wi-Fi restoration | The original WLAN module and Android managed mode were restored after testing. |
 | USB HID | A dedicated Mac receiver got the test keyboard string and two opposite mouse movements. ADB-only USB mode returned afterward. |
 | Bluetooth in Kali | BlueZ discovery, Bluelog detection of the lab laptop, classic pairing on both ends, and SDP browsing passed. The test bond was removed. |
+| BadBluetooth HID | The installed phone launcher bonded with the owned Kali laptop and opened both Classic HID channels. An exclusive evdev receiver confirmed exactly one `KEY_N` press and release plus two opposite relative mouse movements with no buttons. The sender was fixed to omit its implicit Enter in plain-text mode. |
 | Bluetooth in Android | Android negotiated aptX HD with the laptop. The receiver captured 3.99 seconds of the synthetic media tone, with the expected 697 and 1209 Hz frequencies 25.2 dB above adjacent comparison frequencies. The temporary settings and bond were removed. |
 | Phone reboot | Magisk root and NetHunter returned. The boot kernel matched the stock reference and SELinux was enforcing. |
-| KeX | A temporary loopback-only XFCE desktop started and required VNC authentication. First sign-in from the Android client with the owner's password remains unverified. |
+| KeX | The Android KeX client authenticated and connected to a loopback-only XFCE desktop. The temporary profile and server were removed afterward. The owner still chooses credentials for regular use. |
 
 The tested Wi-Fi module SHA-256 was `6e895b099586f384ebc14628889f4a9e0c2e7d495c0f85fd8873e87b220a1f5f`. The stock WLAN module SHA-256 was `b117f692bf9fdd2eecd15d5f50ffc7167e4cc1da7d23f71bb0ec610efd7cfc40`.
 
-The test path enforces a 10 packet-per-second cap. Firmware rewrote Duration to 202 microseconds in the observed data and RTS cases and can retry frames. Other control-frame subtypes, performance at higher rates, other firmware builds, and BadBluetooth HID remain outside the verified scope.
+The test path enforces a 10 packet-per-second cap. Firmware rewrote Duration to 202 microseconds in the observed data and RTS cases and can retry frames. Other control-frame subtypes, performance at higher rates, and other firmware builds remain outside the verified scope. BadBluetooth was verified through its installed CLI. The APK’s start button and preset payloads were outside this test.
 
 ## Publication checks
 

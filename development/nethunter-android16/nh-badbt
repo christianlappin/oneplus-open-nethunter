@@ -1,0 +1,38 @@
+#!/system/bin/sh
+# Run from Android's Magisk root shell. This is a foreground session.
+set -eu
+nh=/data/adb/nh-open/nh-open
+state=/dev/.nh-open-bt
+lock=/dev/.nh-open-badbt-lock
+if [ "$#" -ne 1 ] || ! printf '%s\n' "$1" | grep -Eq '^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$'; then
+    echo 'Usage: nh-badbt <authorized Bluetooth receiver address>' >&2
+    exit 2
+fi
+mkdir "$lock"
+lease_started=0
+cleanup() {
+    if [ "$lease_started" = 1 ]; then
+        "$nh" bluetooth-stop
+        for attempt in $(seq 1 15); do
+            [ -e "$state/active" ] || break
+            sleep 1
+        done
+        if [ -e "$state/active" ]; then
+            echo 'Bluetooth restoration is still pending' >&2
+        else
+            echo 'Android Bluetooth ownership restored'
+        fi
+    fi
+    rmdir "$lock"
+}
+trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
+test ! -e "$state/active"
+"$nh" bluetooth-start 320
+lease_started=1
+for attempt in $(seq 1 15); do
+    [ ! -e /sys/class/bluetooth/hci0 ] || break
+    sleep 1
+done
+test -e /sys/class/bluetooth/hci0
+"$nh" exec sh /root/badbt/run-badbt.sh "$1"

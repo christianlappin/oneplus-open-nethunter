@@ -10,11 +10,11 @@ The phone uses an unlocked bootloader and a Magisk-patched `init_boot`. It retai
 | --- | --- |
 | Wi-Fi receive | Passive beacon capture on channels 1, 6, and 11 with Kali tcpdump. |
 | Wi-Fi transmit | An independent receiver confirmed the tested management, data and RTS frames on channel 1. Five frames from the aireplay-ng file replay were captured at approximately 5 frames per second. The driver caps the test path at 10 packets per second. Firmware can rewrite Duration and retry frames. |
-| Bluetooth | Kali discovered and paired with a lab laptop and browsed its SDP services. In a separate Android session, the laptop received and decoded both frequencies of a synthetic test tone over aptX HD. |
+| Bluetooth | Kali discovered and paired with a lab laptop and browsed its SDP services. The installed BadBluetooth CLI also delivered a keyboard press and release and two mouse movements. In a separate Android session, the laptop decoded a synthetic media tone over aptX HD. |
 | USB HID | A dedicated Mac receiver verified keyboard input and mouse movement. The NetHunter USB Arsenal CLI works with a corrected mouse descriptor. OxygenOS hides the app menu on this build. |
-| Boot and KeX | Magisk, NetHunter, and the stock kernel came back after a normal reboot. A temporary loopback XFCE session started and required VNC authentication. First sign-in with the owner's KeX credentials is pending. |
+| Boot and KeX | Magisk, NetHunter, and the stock kernel came back after a normal reboot. The Android KeX client authenticated and connected to a temporary loopback XFCE desktop. |
 
-The results apply to this firmware and kernel. Other frame types, higher replay rates, and BadBluetooth HID remain outside the verified scope.
+The results apply to this firmware and kernel. Other frame types, higher replay rates, and the APK’s BadBluetooth start button remain outside the verified scope.
 
 ## Source provenance
 
@@ -32,6 +32,7 @@ The public OnePlus source checkouts are the starting point for the build. The co
 
 - [Firmware source, extraction and AVB verification](docs/firmware.md)
 - [Host build and ABI checks](docs/build.md)
+- [BadBluetooth setup and verification](docs/badbluetooth.md)
 - [Verified lab results](docs/results.md)
 - [Licensing and credits](LICENSE.md)
 

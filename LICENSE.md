@@ -7,3 +7,5 @@ The Bluebinder changes follow its GPL-2.0-or-later source notice. The NetHunter 
 The original build helpers, launchers, and test programs in this repository are available under GPL-2.0-only. Source files and patches with their own upstream notices retain those terms.
 
 Maintained by [@christianlappin](https://github.com/christianlappin). This research builds on OnePlus and Qualcomm kernel code, Kali NetHunter, Magisk, the Android Open Source Project, Bluebinder and its Jolla and BlueZ contributors, and Aircrack-ng.
+
+The BadBluetooth patch applies to the upstream MIT-licensed project. Its [license and copyright notice](licenses/badbt.txt) are included.
