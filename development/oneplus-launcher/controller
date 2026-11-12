@@ -1,0 +1,228 @@
+#!/system/bin/sh
+set -eu
+base=/data/adb/nh-open
+state=/dev/.nh-open-launcher
+monitor=$base/wlan/nh-monitor
+nh=$base/nh-open
+result=$base/launcher-result
+downloads=/sdcard/Download/NetHunter
+chroot=/data/local/nhsystem/kali-arm64
+usb_state=/dev/.nh-open-launcher-usb
+gadget=/config/usb_gadget/g1
+config=$gadget/configs/b.1
+description=$config/strings/0x409/configuration
+arsenal=/data/data/com.offsec.nethunter/scripts/usbarsenal
+umask 077
+
+message() {
+    printf '%s\n' "$*" >"$result.new"
+    mv -f "$result.new" "$result"
+}
+
+cleanup() {
+    trap - EXIT HUP INT TERM
+    if [ -n "${child:-}" ]; then
+        kill -TERM "$child" 2>/dev/null || true
+        wait "$child" 2>/dev/null || true
+    fi
+    if [ "$mode" = wifi ]; then
+        "$monitor" stop || true
+        wait "$launcher" 2>/dev/null || true
+        if [ -s "$chroot$file" ]; then
+            if mkdir -p "$downloads" && mv -f "$chroot$file" "$downloads/$name"; then
+                message "Capture saved in Downloads/NetHunter/$name"
+            else
+                message 'Could not save capture to Downloads. See the session log.'
+            fi
+        elif [ -e "$state/stop" ]; then
+            message 'Capture stopped before a file was written.'
+        else
+            message 'Capture could not start. See the session log.'
+        fi
+    else
+        wait "$launcher" 2>/dev/null || true
+        if [ -e "$state/stop" ] || [ -e "$state/ready" ]; then
+            message 'Bad Bluetooth session ended.'
+        else
+            message 'Bad Bluetooth could not start. See the session log.'
+        fi
+    fi
+    rm -f "$state/stop" "$state/ready" "$state/mode"
+    rmdir "$state"
+}
+
+run_wifi() {
+    name="wifi-$(date +%Y%m%d-%H%M%S)-$$.pcap"
+    file="/tmp/$name"
+    duration=$2
+    "$monitor" run passive "$1" "$((duration + 30))" &
+    launcher=$!
+    for attempt in $(seq 1 20); do
+        [ ! -e "$state/stop" ] && kill -0 "$launcher" 2>/dev/null || return 1
+        if ip link show nhmon0 >/dev/null 2>&1 && grep -q 'nhmon0 ready' "$base/launcher.log"; then
+            "$nh" exec tcpdump -n -U -i nhmon0 -Z root -w "$file" 'type mgt subtype beacon' &
+            child=$!
+            break
+        fi
+        sleep 1
+    done
+    [ -n "${child:-}" ] || return 1
+    for second in $(seq 1 "$duration"); do
+        [ ! -e "$state/stop" ] && kill -0 "$child" 2>/dev/null || return 0
+        if [ -s "$chroot$file" ] && [ ! -e "$state/ready" ]; then
+            touch "$state/ready"
+            message "Capturing Wi-Fi beacons. Stops automatically after $duration seconds."
+        fi
+        sleep 1
+    done
+}
+
+run_bluetooth() {
+    "$base/nh-badbt" --app "$1" &
+    launcher=$!
+    for attempt in $(seq 1 30); do
+        kill -0 "$launcher" 2>/dev/null || break
+        if [ -s "$chroot/root/badbt/.app-peer" ]; then
+            "$nh" exec env PYTHONUNBUFFERED=1 python3 /root/badbt/btk_server.py -n 'NH Lab Keyboard' -i hci0 &
+            child=$!
+            sleep 2
+            break
+        fi
+        sleep 1
+    done
+    if [ -z "${child:-}" ]; then
+        kill -TERM "$launcher" 2>/dev/null || true
+        return 1
+    fi
+    for second in $(seq 1 290); do
+        [ ! -e "$state/stop" ] && kill -0 "$child" 2>/dev/null || return 0
+        if grep -q 'Waiting for the authorized receiver' "$base/launcher.log" && [ ! -e "$state/ready" ]; then
+            touch "$state/ready"
+            message 'Keyboard ready. Pair NH Lab Keyboard on your receiver, then use Bluetooth Arsenal to send.'
+        fi
+        sleep 1
+    done
+}
+
+usb_is_adb_only() {
+    [ "$(readlink "$config/f1" 2>/dev/null | sed 's|.*/||')" = ffs.adb ] &&
+        [ "$(find "$config" -maxdepth 1 -type l | wc -l)" -eq 1 ] &&
+        [ -n "$(cat "$gadget/UDC")" ]
+}
+
+usb_arsenal() {
+    sh "$arsenal" -t "$(cat "$usb_state/target")" -f "$1" \
+        -v "$(cat "$usb_state/vendor")" -p "$(cat "$usb_state/product")"
+}
+
+usb_restore() {
+    [ -d "$usb_state" ] || return 0
+    if ! usb_is_adb_only; then
+        usb_arsenal reset
+    fi
+    if ! usb_is_adb_only; then
+        echo 'USB is still restoring. Retry Restore normal mode.' >&2
+        return 1
+    fi
+    cat "$usb_state/description" >"$description"
+    rm -f "$usb_state/target" "$usb_state/vendor" "$usb_state/product" "$usb_state/description"
+    rmdir "$usb_state"
+}
+
+[ "$(id -u)" = 0 ] || { echo 'Magisk root is required.' >&2; exit 1; }
+case "${1:-status}" in
+    wifi|bluetooth)
+        mode=$1
+        if [ "$mode" = wifi ]; then
+            case "${2:-}" in 2412|2437|2462) ;; *) exit 2 ;; esac
+            case "${3:-}" in 15|30|60) ;; *) exit 2 ;; esac
+            [ ! -d /dev/.nh-open-wlan ] || { echo 'A Wi-Fi monitor session is already running.'; exit 1; }
+        else
+            printf '%s\n' "${2:-}" | grep -Eq '^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$' || exit 2
+            [ ! -e /dev/.nh-open-bt/active ] && [ ! -d /dev/.nh-open-badbt-lock ] ||
+                { echo 'A Bluetooth session is already running.'; exit 1; }
+        fi
+        [ ! -d "$usb_state" ] || { echo "Restore USB mode before starting another session."; exit 1; }
+        mkdir "$state" 2>/dev/null || { echo 'A launcher session is already running.'; exit 1; }
+        printf '%s\n' "$mode" >"$state/mode"
+        message 'Starting session…'
+        # Android Binder commands need a pipe for their output descriptors.
+        nohup /system/bin/sh -c '"$@" 2>&1 | /system/bin/cat' sh \
+            /system/bin/sh "$0" worker "$mode" "$2" "${3:-}" >"$base/launcher.log" 2>&1 </dev/null &
+        ;;
+    worker)
+        mode=$2
+        trap cleanup EXIT
+        trap 'exit 130' HUP INT TERM
+        case "$mode" in wifi) run_wifi "$3" "$4" ;; bluetooth) run_bluetooth "$3" ;; esac
+        ;;
+    usb)
+        case "${2:-}" in mac|lnx|win) ;; *) exit 2 ;; esac
+        [ ! -d "$state" ] && [ ! -d "$usb_state" ] ||
+            { echo 'Restore normal mode before starting USB HID.'; exit 1; }
+        [ "$(getprop sys.usb.config)" = adb ] && usb_is_adb_only ||
+            { echo 'Start from USB debugging mode with file transfer and tethering off.'; exit 1; }
+        mkdir "$usb_state"
+        printf '%s\n' "$2" >"$usb_state/target"
+        cat "$gadget/idVendor" >"$usb_state/vendor"
+        cat "$gadget/idProduct" >"$usb_state/product"
+        cat "$description" >"$usb_state/description"
+        if ! usb_arsenal adb,hid || [ ! -c /dev/hidg0 ] || [ ! -c /dev/hidg1 ] ||
+            [ "$(readlink "$config/f2" | sed 's|.*/||')" != hid.0 ] ||
+            [ "$(readlink "$config/f3" | sed 's|.*/||')" != hid.1 ]; then
+            usb_restore
+            echo 'USB keyboard and mouse could not be enabled.' >&2
+            exit 1
+        fi
+        message 'USB keyboard and mouse enabled. Restore normal mode when finished.'
+        ;;
+    usb-test)
+        [ -d "$usb_state" ] && [ -c /dev/hidg0 ] || exit 1
+        timeout 4 /system/bin/sh -c '
+            {
+                printf "\000\000\021\000\000\000\000\000"
+                printf "\000\000\000\000\000\000\000\000"
+            } >/dev/hidg0
+        ' || { echo 'The USB host did not accept the test key.' >&2; exit 1; }
+        message 'Sent one lowercase n over USB.'
+        ;;
+    stop)
+        if [ -d "$state" ]; then
+            touch "$state/stop"
+            for attempt in $(seq 1 35); do
+                [ -d "$state" ] || break
+                sleep 1
+            done
+            [ ! -d "$state" ] || { echo 'Session is still stopping. Try again shortly.'; exit 1; }
+        fi
+        "$monitor" stop
+        "$nh" bluetooth-stop
+        if [ -d "$usb_state" ]; then
+            usb_restore
+            message 'USB restored to ADB-only mode.'
+        fi
+        for attempt in $(seq 1 15); do
+            if [ ! -d /dev/.nh-open-wlan ] && [ ! -e /dev/.nh-open-bt/active ]; then
+                if [ ! -f "$result" ]; then message 'Android Wi-Fi and Bluetooth are ready.'; fi
+                exit 0
+            fi
+            sleep 1
+        done
+        echo 'Android is still restoring the radios. Try again shortly.'
+        exit 1
+        ;;
+    status)
+        if [ -d "$usb_state" ]; then
+            echo usb
+        elif [ -d "$state" ] || [ -d /dev/.nh-open-wlan ] || [ -e /dev/.nh-open-bt/active ]; then
+            echo active
+        else
+            echo idle
+        fi
+        if [ -f "$result" ]; then cat "$result"; else echo 'Android Wi-Fi and Bluetooth are ready.'; fi
+        ;;
+    log)
+        if [ -f "$base/launcher.log" ]; then tail -25 "$base/launcher.log"; else echo 'No launcher session yet.'; fi
+        ;;
+    *) exit 2 ;;
+esac
