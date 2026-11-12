@@ -34,6 +34,20 @@ On November 11, 2026, APT downloaded 951 MB over Android Wi-Fi and completed a K
 
 Kali also loaded the Bluetooth Python dependencies under Python 3.14.7. The phone finished the tests in normal mode with Wi-Fi connected. Follow the [on-phone upgrade procedure](launcher.md#update-kali-packages-on-the-phone) to reproduce the maintenance steps.
 
+## Launcher 1.3 wireless tools
+
+| Test on the phone | Observed result |
+| --- | --- |
+| Targeted lab capture and TShark | A 30-second channel 44 run saved 745 frames: 283 management, 194 control and 268 data. Every frame referenced the selected AP and reported 5220 MHz. Monitor TX was disabled. The summary showed RSN PSK and zero EAPOL frames. |
+| Targeted Airodump-ng survey | A 15-second survey saved a CSV with 140 beacons from the selected AP on channel 44. The saved PCAP contained 468 frames, all referencing the selected AP after filtering. Android Wi-Fi reconnected afterward. |
+| Wash and hcxtools | Both opened the saved lab PCAP from the Android menu. Wash found a WPS 2.0 advertisement. hcxtools 7.1.2 parsed the capture and reported insufficient EAPOL frames. No hash file was written. |
+| Aircrack-ng and Wireshark | Aircrack-ng parsed a saved beacon PCAP; no password audit was run. Wireshark rendered the same file in a Kali X display on the phone. |
+| Kismet replay | The launcher started Kismet with the lab PCAP, opened the phone browser, and bound HTTP only to `127.0.0.1:12501`. Restore normal mode closed the listener. |
+| Live Kismet | With the internal adapter fixed to channel 44 in passive mode, Kismet opened `nhmon0` and its local API reported 19 packets for the selected AP. The test stopped Kismet and restored the stock Wi-Fi driver. |
+| NetHunter Terminal | The launcher opened the companion Terminal after Android’s first-run notification prompt. |
+
+The requested binaries were present in Kali. The verified Aireplay-ng transmit test is listed above; no new transmit test or Reaver PIN audit was run as part of the launcher checks. Wifite's passive discovery result is described in the [launcher guide](launcher.md#verified-on-the-oneplus-open).
+
 ## Publication checks
 
 The original publication patches passed application checks against their pinned sources or matching extracted NetHunter app assets. The host radiotap suite passed 100,000 fuzz inputs and the TX admission suite passed 2,048 subtype and truncation inputs. The saved tested WLAN artifact passed its ABI and callback-layout checks, with 63 shared callbacks and zero offset mismatches. The three published image hashes matched the extracted reference files. The public AVB script reproduced the result using the recorded pre-unlock properties as an ADB fixture.

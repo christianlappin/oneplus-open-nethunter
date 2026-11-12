@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothManager;
 import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
@@ -12,6 +13,7 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -51,7 +53,10 @@ public final class MainActivity extends Activity {
     private TextView statusText;
     private Button capture;
     private Button scan;
+    private Button survey;
+    private Button analyze;
     private boolean showScanWhenReady;
+    private boolean openKismetWhenReady;
     private Button bluetooth;
     private Button restore;
     private Button usb;
@@ -91,12 +96,18 @@ public final class MainActivity extends Activity {
         add(status, statusText, 6);
         add(content, status, 22);
 
-        capture = button("Capture Wi-Fi beacons", GREEN, Color.WHITE, GREEN, this::pickBand);
+        capture = button("Capture Wi-Fi beacons", GREEN, Color.WHITE, GREEN, () -> pickBand("wifi"));
         add(content, capture, 20);
         add(content, label("Choose a channel and duration. Saves a PCAP to Downloads.", 14, MUTED, false), 6);
 
         scan = button("Scan channels", PAPER, GREEN, LINE, this::pickScanBand);
         add(content, scan, 8);
+
+        survey = button("Airodump-ng survey", PAPER, GREEN, LINE, () -> pickBand("survey"));
+        add(content, survey, 8);
+        analyze = button("Analyze capture", PAPER, GREEN, LINE, () -> pickCapture("summary"));
+        add(content, analyze, 8);
+        add(content, button("Wireless tools", PAPER, GREEN, LINE, this::showWirelessTools), 8);
 
         bluetooth = button("Start Bad Bluetooth", INK, Color.WHITE, INK, this::pickReceiver);
         add(content, bluetooth, 17);
@@ -141,10 +152,10 @@ public final class MainActivity extends Activity {
         5180, 5200, 5220, 5240, 5745, 5765, 5785, 5805, 5825
     };
 
-    private void pickBand() {
+    private void pickBand(String mode) {
         new AlertDialog.Builder(this).setTitle("Choose a Wi-Fi band")
             .setItems(new String[] {"2.4 GHz", "5 GHz"}, (dialog, which) ->
-                pickChannel(which == 0 ? CHANNELS_24 : CHANNELS_5))
+                pickChannel(mode, which == 0 ? CHANNELS_24 : CHANNELS_5))
             .setNegativeButton("Cancel", null).show();
     }
 
@@ -154,13 +165,13 @@ public final class MainActivity extends Activity {
         return "Channel " + channel + " · " + (lowBand ? "2.4 GHz" : "5 GHz");
     }
 
-    private void pickChannel(int[] frequencies) {
+    private void pickChannel(String mode, int[] frequencies) {
         String[] channels = new String[frequencies.length];
         for (int index = 0; index < channels.length; index++) {
             channels[index] = channelLabel(frequencies[index]);
         }
         new AlertDialog.Builder(this).setTitle("Choose a Wi-Fi channel")
-            .setItems(channels, (dialog, which) -> pickDuration(frequencies[which], "", ""))
+            .setItems(channels, (dialog, which) -> pickDuration(mode, frequencies[which], "", ""))
             .setNegativeButton("Cancel", null).show();
     }
 
@@ -205,26 +216,46 @@ public final class MainActivity extends Activity {
                         : "Run a channel scan first.");
                 } else {
                     dialog.setItems(labels.toArray(new String[0]), (unused, which) ->
-                        pickDuration(frequencies.get(which), addresses.get(which), names.get(which)));
+                        pickAccessPointAction(frequencies.get(which), addresses.get(which), names.get(which)));
                 }
                 dialog.show();
             });
         });
     }
 
-    private void pickDuration(int frequency, String address, String name) {
+    private void pickAccessPointAction(int frequency, String address, String name) {
+        String[] modes = {"wifi", "lab", "survey"};
+        new AlertDialog.Builder(this).setTitle(name + " · " + channelLabel(frequency))
+            .setItems(new String[] {"Capture beacons", "Capture lab traffic", "Airodump-ng survey"},
+                (dialog, which) -> {
+                    if (which != 1) {
+                        pickDuration(modes[which], frequency, address, name);
+                    } else {
+                        new AlertDialog.Builder(this).setTitle("Capture lab traffic")
+                            .setMessage("Record management, control, and data frames involving the selected access point. Use a network you own or are authorized to audit.")
+                            .setPositiveButton("Choose duration", (confirm, button) ->
+                                pickDuration("lab", frequency, address, name))
+                            .setNegativeButton("Cancel", null).show();
+                    }
+                })
+            .setNegativeButton("Cancel", null).show();
+    }
+
+    private void pickDuration(String mode, int frequency, String address, String name) {
         String[] labels = {"15 seconds", "30 seconds", "60 seconds", "Custom duration"};
         int[] seconds = {15, 30, 60};
-        String title = address.isEmpty() ? "Capture duration" : "Capture " + name + " beacons";
+        String title = mode.equals("survey") ? "Airodump-ng survey duration"
+            : mode.equals("lab") ? "Capture " + name + " lab traffic"
+            : address.isEmpty() ? "Capture duration" : "Capture " + name + " beacons";
         new AlertDialog.Builder(this).setTitle(title)
             .setItems(labels, (dialog, which) -> {
-                if (which < seconds.length) startCapture(frequency, address, seconds[which]);
-                else enterDuration(frequency, address);
+                if (which < seconds.length) startCapture(mode, frequency, address, seconds[which]);
+                else enterDuration(mode, frequency, address);
             })
             .setNegativeButton("Cancel", null).show();
     }
 
-    private void enterDuration(int frequency, String address) {
+    private void enterDuration(String mode, int frequency, String address) {
         EditText input = new EditText(this);
         input.setSingleLine();
         input.setInputType(InputType.TYPE_CLASS_NUMBER);
@@ -247,15 +278,124 @@ public final class MainActivity extends Activity {
                 return;
             }
             dialog.dismiss();
-            startCapture(frequency, address, seconds);
+            startCapture(mode, frequency, address, seconds);
         }));
         dialog.show();
     }
 
-    private void startCapture(int frequency, String address, int seconds) {
+    private void startCapture(String mode, int frequency, String address, int seconds) {
         String options = frequency + " " + seconds;
-        String command = address.isEmpty() ? "wifi " + options : "wifi-ap " + options + " " + address;
+        if (mode.equals("wifi") && !address.isEmpty()) mode = "wifi-ap";
+        String command = mode + " " + options + (address.isEmpty() ? "" : " " + address);
         action(command, "Starting Wi-Fi capture…");
+    }
+
+    private static final String CAPTURE_NAME = "(wifi|lab|survey)-[0-9]{8}-[0-9]{6}-[0-9]+\\.pcap";
+
+    private void pickCapture(String analyzer) {
+        if (!authenticated || runningCommand || active) {
+            new AlertDialog.Builder(this).setMessage("Finish the current session before opening a capture.")
+                .setPositiveButton("OK", null).show();
+            return;
+        }
+        commands.execute(() -> {
+            Result listing = run("captures");
+            List<String> files = new ArrayList<>();
+            for (String line : listing.output.split("\n")) {
+                if (line.matches(CAPTURE_NAME)) files.add(line);
+            }
+            main.post(() -> {
+                if (!foreground) return;
+                AlertDialog.Builder picker = new AlertDialog.Builder(this).setTitle("Choose a saved capture")
+                    .setNegativeButton("Close", null);
+                if (files.isEmpty()) picker.setMessage("No launcher captures in Downloads/NetHunter.");
+                else picker.setItems(files.toArray(new String[0]), (dialog, which) -> {
+                    String file = files.get(which);
+                    if (analyzer.equals("kismet")) {
+                        openKismetWhenReady = true;
+                        action("kismet " + file, "Starting local Kismet replay…");
+                    } else {
+                        analyzeCapture(file, analyzer);
+                    }
+                });
+                picker.show();
+            });
+        });
+    }
+
+    private void analyzeCapture(String name, String analyzer) {
+        runningCommand = true;
+        main.removeCallbacks(refresh);
+        statusText.setText("Reading " + name + "…");
+        updateButtons();
+        commands.execute(() -> {
+            Result result = run("analyze " + name + " " + analyzer);
+            String output = result.output.replaceAll("(?m)^(?:\\[!\\] Checking chroot environment\\.|Linux|\\[\\+\\] .* (?:was mounted|has been started) already\\.)\\n?", "").trim();
+            main.post(() -> {
+                runningCommand = false;
+                updateButtons();
+                if (foreground) {
+                    String title = analyzer.equals("wash") ? "Wash · offline WPS"
+                        : analyzer.equals("hcx") ? "hcxtools · capture details" : "Capture summary";
+                    ScrollView scroll = new ScrollView(this);
+                    TextView report = label(output.isEmpty() ? "No output." : output, 14, INK, false);
+                    report.setPadding(dp(24), dp(10), dp(24), dp(10));
+                    report.setTextIsSelectable(true);
+                    scroll.addView(report);
+                    new AlertDialog.Builder(this).setTitle(result.code == 0 ? title : "Could not read capture")
+                        .setView(scroll).setPositiveButton("Close", null).show();
+                }
+                readStatus();
+            });
+        });
+    }
+
+    private void showWirelessTools() {
+        String[] tools = {"TShark · capture summary", "Wash · offline WPS check", "hcxtools · capture details",
+            "Aircrack-ng", "Aireplay-ng", "Wifite", "Kismet · replay capture", "Reaver", "Wireshark · KeX", "Open NetHunter Terminal"};
+        String[] details = {
+            "Aircrack-ng is installed in Kali. It reads saved captures for credential audits. Open NetHunter Terminal and choose Kali. Captures are in /sdcard/Download/NetHunter.",
+            "Aireplay-ng is installed in Kali. Use it from NetHunter Terminal with a separately prepared lab monitor session. It can transmit; the launcher capture modes are receive-only.",
+            "Wifite is installed in Kali. It needs an interactive terminal and a compatible monitor session. It can start active tests after you select a target.",
+            "",
+            "Reaver is installed in Kali for active WPS testing. Use Wash to check a capture for WPS first. Reaver is kept in NetHunter Terminal for authorized lab use.",
+            "Start the Kali desktop in NetHunter KeX, then open Wireshark and select a file from /sdcard/Download/NetHunter. KeX runs on this phone."
+        };
+        new AlertDialog.Builder(this).setTitle("Wireless tools")
+            .setItems(tools, (dialog, which) -> {
+                switch (which) {
+                    case 0: pickCapture("summary"); break;
+                    case 1: pickCapture("wash"); break;
+                    case 2: pickCapture("hcx"); break;
+                    case 6:
+                        if (statusText.getText().toString().startsWith("Kismet replay ready")) {
+                            openKismet();
+                        } else {
+                            new AlertDialog.Builder(this).setTitle("Kismet · replay capture")
+                                .setMessage("Review a saved capture in your phone’s browser. The server runs on this phone for up to 15 minutes. Kismet will ask you to create a login the first time.")
+                                .setPositiveButton("Choose capture", (info, button) -> pickCapture("kismet"))
+                                .setNegativeButton("Cancel", null).show();
+                        }
+                        break;
+                    case 9: openPackage("com.offsec.nhterm", "NetHunter Terminal"); break;
+                    default:
+                        new AlertDialog.Builder(this).setTitle(tools[which]).setMessage(details[which - 3])
+                            .setPositiveButton(which == 8 ? "Open NetHunter" : "Open Terminal",
+                                (info, button) -> {
+                                    if (which == 8) openNetHunter();
+                                    else openPackage("com.offsec.nhterm", "NetHunter Terminal");
+                                }).setNegativeButton("Close", null).show();
+                }
+            }).setNegativeButton("Close", null).show();
+    }
+
+    private void openKismet() {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("http://127.0.0.1:12501/")));
+        } catch (ActivityNotFoundException error) {
+            new AlertDialog.Builder(this).setMessage("Open http://127.0.0.1:12501/ in your phone’s browser.")
+                .setPositiveButton("OK", null).show();
+        }
     }
 
     private void pickUsbHost() {
@@ -367,13 +507,21 @@ public final class MainActivity extends Activity {
     }
 
     private void openNetHunter() {
-        Intent intent = getPackageManager().getLaunchIntentForPackage("com.offsec.nethunter");
+        openPackage("com.offsec.nethunter", "NetHunter");
+    }
+
+    private void openPackage(String packageName, String label) {
+        Intent intent = getPackageManager().getLaunchIntentForPackage(packageName);
         if (intent != null) {
-            startActivity(intent);
-        } else {
-            new AlertDialog.Builder(this).setMessage("NetHunter could not be opened.")
-                .setPositiveButton("OK", null).show();
+            try {
+                startActivity(intent);
+                return;
+            } catch (ActivityNotFoundException | SecurityException ignored) {
+                // The companion may have been removed or disabled.
+            }
         }
+        new AlertDialog.Builder(this).setMessage(label + " could not be opened.")
+            .setPositiveButton("OK", null).show();
     }
 
     private void showLog() {
@@ -403,6 +551,12 @@ public final class MainActivity extends Activity {
                     statusTitle.setText(active ? "Session active" : "Ready");
                     String message = lines.length == 2 ? lines[1] : "";
                     statusText.setText(message);
+                    if (openKismetWhenReady && message.startsWith("Kismet replay ready")) {
+                        openKismetWhenReady = false;
+                        openKismet();
+                    } else if (!active) {
+                        openKismetWhenReady = false;
+                    }
                     if (showScanWhenReady && !active) {
                         showScanWhenReady = false;
                         if (message.startsWith("Channel scan complete")) showScanResults();
@@ -458,6 +612,8 @@ public final class MainActivity extends Activity {
     private void updateButtons() {
         capture.setEnabled(authenticated && !runningCommand && !active);
         scan.setEnabled(authenticated && !runningCommand && !active);
+        survey.setEnabled(authenticated && !runningCommand && !active);
+        analyze.setEnabled(authenticated && !runningCommand && !active);
         bluetooth.setEnabled(authenticated && !runningCommand && !active);
         usb.setEnabled(authenticated && !runningCommand && !active);
         testKey.setVisibility(usbActive ? View.VISIBLE : View.GONE);

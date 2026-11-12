@@ -24,16 +24,45 @@ message() {
     mv -f "$result.new" "$result"
 }
 
+ap_filter() {
+    printf 'wlan addr1 %s or wlan addr2 %s or wlan addr3 %s' "$1" "$1" "$1"
+}
+
 cleanup() {
     trap - EXIT HUP INT TERM
     if [ -n "${child:-}" ]; then
+        if [ "$mode" = survey ]; then
+            kill -INT "$child" 2>/dev/null || true
+            for attempt in 1 2 3; do
+                kill -0 "$child" 2>/dev/null || break
+                sleep 1
+            done
+        fi
         kill -TERM "$child" 2>/dev/null || true
         wait "$child" 2>/dev/null || true
     fi
-    if [ "$mode" = wifi ] || [ "$mode" = scan ]; then
+    if [ "$mode" = kismet ]; then
+        if [ -e "$state/ready" ]; then
+            message 'Kismet replay ended.'
+        else
+            message 'Kismet could not start. See the session log.'
+        fi
+    elif [ "$mode" != bluetooth ]; then
         "$monitor" stop || true
         wait "$launcher" 2>/dev/null || true
-        if [ "$mode" = scan ]; then
+        if [ "$mode" = survey ] && [ -n "${access_point:-}" ] && [ -s "$chroot$file" ]; then
+            # Airodump's BSSID filter still writes some unassociated control frames.
+            scoped="$survey_dir/scoped.pcap"
+            if "$nh" exec timeout -k 2 20 tcpdump -n -r "$file" -w "$scoped" "$(ap_filter "$access_point")"; then
+                file="$scoped"
+            else
+                file=
+                survey_filter_failed=1
+            fi
+        fi
+        if [ "${survey_filter_failed:-0}" = 1 ]; then
+            message 'Could not scope the survey PCAP to the selected access point. See the session log.'
+        elif [ "$mode" = scan ]; then
             if [ -n "${scan_dir:-}" ]; then rm -rf "$chroot$scan_dir"; fi
             if [ -e "$state/stop" ]; then
                 message 'Channel scan stopped.'
@@ -42,10 +71,17 @@ cleanup() {
             else
                 message 'Channel scan could not finish. See the session log.'
             fi
-        elif [ -s "$chroot$file" ]; then
+        elif [ -n "${file:-}" ] && [ -s "$chroot$file" ]; then
             if mkdir -p "$downloads" && mv -f "$chroot$file" "$downloads/$name"; then
-                if [ -n "${access_point:-}" ] && [ "$(stat -c %s "$downloads/$name")" -eq 24 ]; then
-                    message "No beacons from the selected access point. Empty PCAP saved in Downloads/NetHunter/$name"
+                if [ "$mode" = survey ]; then
+                    if [ -s "$chroot$survey_prefix-01.csv" ] &&
+                        mv -f "$chroot$survey_prefix-01.csv" "$downloads/${name%.pcap}.csv"; then
+                        message "Survey PCAP and CSV saved in Downloads/NetHunter (${name%.pcap})."
+                    else
+                        message "Survey PCAP saved in Downloads/NetHunter/$name. No CSV was written."
+                    fi
+                elif [ -n "${access_point:-}" ] && [ "$(stat -c %s "$downloads/$name")" -eq 24 ]; then
+                    message "No matching frames. Empty PCAP saved in Downloads/NetHunter/$name"
                 else
                     message "Capture saved in Downloads/NetHunter/$name"
                 fi
@@ -65,6 +101,7 @@ cleanup() {
             message 'Bad Bluetooth could not start. See the session log.'
         fi
     fi
+    if [ -n "${survey_dir:-}" ]; then rm -rf "$chroot$survey_dir"; fi
     rm -f "$state/stop" "$state/ready" "$state/mode" "$state/networks"
     rmdir "$state"
 }
@@ -83,22 +120,41 @@ start_monitor() {
 }
 
 run_wifi() {
-    name="wifi-$(date +%Y%m%d-%H%M%S)-$$.pcap"
+    name="$mode-$(date +%Y%m%d-%H%M%S)-$$.pcap"
     file="/tmp/$name"
     duration=$2
     access_point=${3:-}
-    filter='type mgt subtype beacon'
-    if [ -n "$access_point" ]; then
-        filter="$filter and wlan addr3 $access_point"
-    fi
     start_monitor "$1" "$((duration + 30))"
-    "$nh" exec tcpdump -n -U -i nhmon0 -Z root -w "$file" "$filter" &
+    if [ "$mode" = survey ]; then
+        survey_dir=$(mktemp -d "$chroot/tmp/nh-survey.XXXXXX")
+        survey_dir=${survey_dir#"$chroot"}
+        survey_prefix="$survey_dir/capture"
+        file="$survey_prefix-01.cap"
+        if [ "$1" -lt 2500 ]; then channel=$((($1 - 2407) / 5))
+        else channel=$((($1 - 5000) / 5)); fi
+        set -- --channel "$channel" --background 1 --write-interval 1 \
+            --output-format pcap,csv --write "$survey_prefix"
+        if [ -n "$access_point" ]; then set -- "$@" --bssid "$access_point"; fi
+        "$nh" exec env TERM=dumb timeout -k 3 -s INT "$duration" airodump-ng "$@" nhmon0 &
+    else
+        filter='type mgt subtype beacon'
+        if [ "$mode" = lab ]; then
+            filter=$(ap_filter "$access_point")
+        elif [ -n "$access_point" ]; then
+            filter="$filter and wlan addr3 $access_point"
+        fi
+        "$nh" exec tcpdump -n -U -i nhmon0 -Z root -w "$file" "$filter" &
+    fi
     child=$!
     for second in $(seq 1 "$duration"); do
         [ ! -e "$state/stop" ] && kill -0 "$child" 2>/dev/null || return 0
         if [ -s "$chroot$file" ] && [ ! -e "$state/ready" ]; then
             touch "$state/ready"
-            if [ -n "$access_point" ]; then
+            if [ "$mode" = survey ]; then
+                message "Running a passive Airodump-ng survey for up to $duration seconds."
+            elif [ "$mode" = lab ]; then
+                message "Capturing frames involving the selected access point for up to $duration seconds."
+            elif [ -n "$access_point" ]; then
                 message "Capturing beacons from $access_point for up to $duration seconds."
             else
                 message "Capturing Wi-Fi beacons. Stops automatically after $duration seconds."
@@ -176,6 +232,43 @@ run_bluetooth() {
     done
 }
 
+capture_path() {
+    printf '%s\n' "$1" | grep -Eq '^(wifi|lab|survey)-[0-9]{8}-[0-9]{6}-[0-9]+\.pcap$' ||
+        { echo 'Invalid capture name.'; return 2; }
+    path="$downloads/$1"
+    [ -f "$path" ] && [ ! -L "$path" ] || { echo 'This capture is no longer available.'; return 1; }
+}
+
+run_kismet() {
+    capture_path "$1"
+    "$nh" exec sh -c '
+        set -eu
+        umask 077
+        work=/root/.nh-kismet
+        mkdir -p "$work/.kismet"
+        printf "%s\n" httpd_bind_address=127.0.0.1 httpd_port=12501 \
+            remote_capture_listen=127.0.0.1 remote_capture_port=0 gps_enable=false >"$work/override.conf"
+        if ss -ltn | grep -Eq ":12501[[:space:]]"; then
+            echo "Port 12501 is already in use." >&2
+            exit 1
+        fi
+        exec timeout -k 4 900 kismet --no-ncurses-wrapper --no-line-wrap \
+            --homedir "$work" --override "$work/override.conf" -n -c "$1:type=pcapfile,pps=200"
+    ' sh "$path" </dev/null &
+    child=$!
+    for attempt in $(seq 1 20); do
+        [ ! -e "$state/stop" ] && kill -0 "$child" 2>/dev/null || return 1
+        if "$nh" exec curl -fsS --max-time 1 http://127.0.0.1:12501/ -o /dev/null >/dev/null 2>&1; then
+            touch "$state/ready"
+            message 'Kismet replay ready. Open Kismet from Wireless tools. Ends after 15 minutes.'
+            break
+        fi
+        sleep 1
+    done
+    [ -e "$state/ready" ] || return 1
+    while [ ! -e "$state/stop" ] && kill -0 "$child" 2>/dev/null; do sleep 1; done
+}
+
 usb_is_adb_only() {
     [ "$(readlink "$config/f1" 2>/dev/null | sed 's|.*/||')" = ffs.adb ] &&
         [ "$(find "$config" -maxdepth 1 -type l | wc -l)" -eq 1 ] &&
@@ -203,17 +296,19 @@ usb_restore() {
 
 [ "$(id -u)" = 0 ] || { echo 'Magisk root is required.' >&2; exit 1; }
 case "${1:-status}" in
-    wifi|wifi-ap|scan|bluetooth)
+    wifi|wifi-ap|lab|survey|scan|bluetooth|kismet)
         mode=$1
         access_point=
-        if [ "$mode" = wifi-ap ]; then
+        if [ "$mode" = wifi-ap ] || [ "$mode" = lab ] || [ -n "${4:-}" ]; then
             access_point=${4:-}
             printf '%s\n' "$access_point" | grep -Eq '^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$' ||
                 { echo 'Invalid access-point address.'; exit 2; }
-            mode=wifi
+            if [ "$mode" = wifi-ap ]; then mode=wifi; fi
         fi
-        if [ "$mode" = wifi ] || [ "$mode" = scan ]; then
-            if [ "$mode" = wifi ]; then
+        if [ "$mode" = kismet ]; then
+            capture_path "${2:-}"
+        elif [ "$mode" != bluetooth ]; then
+            if [ "$mode" != scan ]; then
                 case " $channels24 $channels5 " in *" ${2:-none} "*) ;; *) exit 2 ;; esac
                 case "${3:-}" in ''|0*|*[!0-9]*) exit 2 ;; esac
                 [ "${#3}" -le 4 ] && [ "$3" -le 1770 ] ||
@@ -242,9 +337,10 @@ case "${1:-status}" in
         trap cleanup EXIT
         trap 'exit 130' HUP INT TERM
         case "$mode" in
-            wifi) run_wifi "$3" "$4" "${5:-}" ;;
+            wifi|lab|survey) run_wifi "$3" "$4" "${5:-}" ;;
             scan) run_scan "$3" ;;
             bluetooth) run_bluetooth "$3" ;;
+            kismet) run_kismet "$3" ;;
         esac
         ;;
     usb)
@@ -311,6 +407,21 @@ case "${1:-status}" in
             echo idle
         fi
         if [ -f "$result" ]; then cat "$result"; else echo 'Android Wi-Fi and Bluetooth are ready.'; fi
+        ;;
+    captures)
+        for file in "$downloads"/*.pcap; do
+            [ -f "$file" ] && [ ! -L "$file" ] && printf '%s\n' "${file##*/}"
+        done | grep -E '^(wifi|lab|survey)-[0-9]{8}-[0-9]{6}-[0-9]+\.pcap$' | sort -t- -k2,2r -k3,3r | head -40 || true
+        ;;
+    analyze)
+        capture_path "${2:-}"
+        case "${3:-summary}" in
+            summary) [ -r "$base/nh-analyze-capture.py" ] || { echo 'Install the capture analyzer first.'; exit 1; }
+                "$nh" exec timeout -k 2 45 python3 - "$path" <"$base/nh-analyze-capture.py" ;;
+            wash) "$nh" exec timeout -k 2 20 wash --file "$path" </dev/null ;;
+            hcx) "$nh" exec timeout -k 2 30 hcxpcapngtool "$path" </dev/null ;;
+            *) exit 2 ;;
+        esac
         ;;
     scan-results)
         if [ -f "$scan_results" ]; then cat "$scan_results"; else exit 1; fi

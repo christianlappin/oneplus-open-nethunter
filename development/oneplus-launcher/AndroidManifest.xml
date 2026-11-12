@@ -1,12 +1,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.oneplusopen.nhlauncher" android:versionCode="3" android:versionName="1.2">
+    package="com.oneplusopen.nhlauncher" android:versionCode="4" android:versionName="1.3">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
-    <queries><package android:name="com.offsec.nethunter" /></queries>
+    <queries>
+        <package android:name="com.offsec.nethunter" />
+        <package android:name="com.offsec.nhterm" />
+    </queries>
     <application android:label="NetHunter Launcher" android:allowBackup="false"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:icon="@android:drawable/ic_menu_compass">
