@@ -1,8 +1,13 @@
 #!/system/bin/sh
 set -eu
+set -o pipefail
 base=/data/adb/nh-open
 state=/dev/.nh-open-launcher
 monitor=$base/wlan/nh-monitor
+monitor_parameters=/sys/module/kiwi_v2/parameters
+scan_results=$base/launcher-scan-results
+channels24='2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462'
+channels5='5180 5200 5220 5240 5745 5765 5785 5805 5825'
 nh=$base/nh-open
 result=$base/launcher-result
 downloads=/sdcard/Download/NetHunter
@@ -25,10 +30,19 @@ cleanup() {
         kill -TERM "$child" 2>/dev/null || true
         wait "$child" 2>/dev/null || true
     fi
-    if [ "$mode" = wifi ]; then
+    if [ "$mode" = wifi ] || [ "$mode" = scan ]; then
         "$monitor" stop || true
         wait "$launcher" 2>/dev/null || true
-        if [ -s "$chroot$file" ]; then
+        if [ "$mode" = scan ]; then
+            if [ -n "${scan_dir:-}" ]; then rm -rf "$chroot$scan_dir"; fi
+            if [ -e "$state/stop" ]; then
+                message 'Channel scan stopped.'
+            elif [ -f "$scan_results" ]; then
+                message 'Channel scan complete. Open Scan channels to view the results.'
+            else
+                message 'Channel scan could not finish. See the session log.'
+            fi
+        elif [ -s "$chroot$file" ]; then
             if mkdir -p "$downloads" && mv -f "$chroot$file" "$downloads/$name"; then
                 message "Capture saved in Downloads/NetHunter/$name"
             else
@@ -47,26 +61,30 @@ cleanup() {
             message 'Bad Bluetooth could not start. See the session log.'
         fi
     fi
-    rm -f "$state/stop" "$state/ready" "$state/mode"
+    rm -f "$state/stop" "$state/ready" "$state/mode" "$state/networks"
     rmdir "$state"
+}
+
+start_monitor() {
+    "$monitor" run passive "$1" "$2" &
+    launcher=$!
+    for attempt in $(seq 1 20); do
+        [ ! -e "$state/stop" ] && kill -0 "$launcher" 2>/dev/null || return 1
+        if ip link show nhmon0 >/dev/null 2>&1 && grep -q 'nhmon0 ready' "$base/launcher.log"; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
 }
 
 run_wifi() {
     name="wifi-$(date +%Y%m%d-%H%M%S)-$$.pcap"
     file="/tmp/$name"
     duration=$2
-    "$monitor" run passive "$1" "$((duration + 30))" &
-    launcher=$!
-    for attempt in $(seq 1 20); do
-        [ ! -e "$state/stop" ] && kill -0 "$launcher" 2>/dev/null || return 1
-        if ip link show nhmon0 >/dev/null 2>&1 && grep -q 'nhmon0 ready' "$base/launcher.log"; then
-            "$nh" exec tcpdump -n -U -i nhmon0 -Z root -w "$file" 'type mgt subtype beacon' &
-            child=$!
-            break
-        fi
-        sleep 1
-    done
-    [ -n "${child:-}" ] || return 1
+    start_monitor "$1" "$((duration + 30))"
+    "$nh" exec tcpdump -n -U -i nhmon0 -Z root -w "$file" 'type mgt subtype beacon' &
+    child=$!
     for second in $(seq 1 "$duration"); do
         [ ! -e "$state/stop" ] && kill -0 "$child" 2>/dev/null || return 0
         if [ -s "$chroot$file" ] && [ ! -e "$state/ready" ]; then
@@ -75,6 +93,47 @@ run_wifi() {
         fi
         sleep 1
     done
+}
+
+run_scan() {
+    case "$1" in
+        24) frequencies=$channels24 ;;
+        5) frequencies=$channels5 ;;
+        all) frequencies="$channels24 $channels5" ;;
+    esac
+    scan_dir="/tmp/nh-launcher-scan-$$"
+    start_monitor "${frequencies%% *}" 165
+    mkdir "$chroot$scan_dir"
+    index=0
+    captured=0
+    total=$(echo "$frequencies" | wc -w | tr -d ' ')
+    for frequency in $frequencies; do
+        [ ! -e "$state/stop" ] && kill -0 "$launcher" 2>/dev/null || return 0
+        index=$((index + 1))
+        message "Scanning $frequency MHz ($index of $total)…"
+        # start_monitor has already tuned and refreshed the first channel.
+        if [ "$index" -gt 1 ] && ! (
+            echo "$frequency" >"$monitor_parameters/nh_monitor_frequency" &&
+            echo 1 >"$monitor_parameters/nh_monitor_refresh_rx"
+        ); then
+            echo "Unable to tune to $frequency MHz." >&2
+            continue
+        fi
+        "$nh" exec timeout 1.5 tcpdump -n -U -i nhmon0 -Z root -s 512 \
+            -w "$scan_dir/$frequency.pcap" 'type mgt subtype beacon' &
+        child=$!
+        wait "$child" || true
+        unset child
+        if [ -s "$chroot$scan_dir/$frequency.pcap" ]; then
+            captured=$((captured + 1))
+        fi
+    done
+    [ ! -e "$state/stop" ] || return 0
+    [ "$captured" -gt 0 ] || { echo 'No channel capture files were created.' >&2; return 1; }
+    echo "Captured on $captured of $total requested channels."
+    "$nh" exec python3 - "$scan_dir" <"$base/nh-scan-beacons.py" |
+        sed -n 's/^NH-AP //p' >"$state/networks"
+    mv "$state/networks" "$scan_results"
 }
 
 run_bluetooth() {
@@ -131,11 +190,16 @@ usb_restore() {
 
 [ "$(id -u)" = 0 ] || { echo 'Magisk root is required.' >&2; exit 1; }
 case "${1:-status}" in
-    wifi|bluetooth)
+    wifi|scan|bluetooth)
         mode=$1
-        if [ "$mode" = wifi ]; then
-            case "${2:-}" in 2412|2437|2462) ;; *) exit 2 ;; esac
-            case "${3:-}" in 15|30|60) ;; *) exit 2 ;; esac
+        if [ "$mode" = wifi ] || [ "$mode" = scan ]; then
+            if [ "$mode" = wifi ]; then
+                case " $channels24 $channels5 " in *" ${2:-none} "*) ;; *) exit 2 ;; esac
+                case "${3:-}" in 15|30|60) ;; *) exit 2 ;; esac
+            else
+                case "${2:-}" in 24|5|all) ;; *) exit 2 ;; esac
+                [ -r "$base/nh-scan-beacons.py" ] || { echo 'Install the scan helper first.'; exit 1; }
+            fi
             [ ! -d /dev/.nh-open-wlan ] || { echo 'A Wi-Fi monitor session is already running.'; exit 1; }
         else
             printf '%s\n' "${2:-}" | grep -Eq '^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$' || exit 2
@@ -145,6 +209,7 @@ case "${1:-status}" in
         [ ! -d "$usb_state" ] || { echo "Restore USB mode before starting another session."; exit 1; }
         mkdir "$state" 2>/dev/null || { echo 'A launcher session is already running.'; exit 1; }
         printf '%s\n' "$mode" >"$state/mode"
+        if [ "$mode" = scan ]; then rm -f "$scan_results"; fi
         message 'Starting session…'
         # Android Binder commands need a pipe for their output descriptors.
         nohup /system/bin/sh -c '"$@" 2>&1 | /system/bin/cat' sh \
@@ -154,7 +219,11 @@ case "${1:-status}" in
         mode=$2
         trap cleanup EXIT
         trap 'exit 130' HUP INT TERM
-        case "$mode" in wifi) run_wifi "$3" "$4" ;; bluetooth) run_bluetooth "$3" ;; esac
+        case "$mode" in
+            wifi) run_wifi "$3" "$4" ;;
+            scan) run_scan "$3" ;;
+            bluetooth) run_bluetooth "$3" ;;
+        esac
         ;;
     usb)
         case "${2:-}" in mac|lnx|win) ;; *) exit 2 ;; esac
@@ -220,6 +289,9 @@ case "${1:-status}" in
             echo idle
         fi
         if [ -f "$result" ]; then cat "$result"; else echo 'Android Wi-Fi and Bluetooth are ready.'; fi
+        ;;
+    scan-results)
+        if [ -f "$scan_results" ]; then cat "$scan_results"; else exit 1; fi
         ;;
     log)
         if [ -f "$base/launcher.log" ]; then tail -25 "$base/launcher.log"; else echo 'No launcher session yet.'; fi

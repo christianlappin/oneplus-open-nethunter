@@ -27,6 +27,8 @@ import android.widget.TextView;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -46,6 +48,8 @@ public final class MainActivity extends Activity {
     private TextView statusTitle;
     private TextView statusText;
     private Button capture;
+    private Button scan;
+    private boolean showScanWhenReady;
     private Button bluetooth;
     private Button restore;
     private Button usb;
@@ -85,9 +89,12 @@ public final class MainActivity extends Activity {
         add(status, statusText, 6);
         add(content, status, 22);
 
-        capture = button("Capture Wi-Fi beacons", GREEN, Color.WHITE, GREEN, this::pickChannel);
+        capture = button("Capture Wi-Fi beacons", GREEN, Color.WHITE, GREEN, this::pickBand);
         add(content, capture, 20);
         add(content, label("Choose a channel and duration. Saves a PCAP to Downloads.", 14, MUTED, false), 6);
+
+        scan = button("Scan channels", PAPER, GREEN, LINE, this::pickScanBand);
+        add(content, scan, 8);
 
         bluetooth = button("Start Bad Bluetooth", INK, Color.WHITE, INK, this::pickReceiver);
         add(content, bluetooth, 17);
@@ -125,12 +132,77 @@ public final class MainActivity extends Activity {
         super.onDestroy();
     }
 
-    private void pickChannel() {
-        String[] channels = {"Channel 1 · 2412 MHz", "Channel 6 · 2437 MHz", "Channel 11 · 2462 MHz"};
-        int[] frequencies = {2412, 2437, 2462};
+    private static final int[] CHANNELS_24 = {
+        2412, 2417, 2422, 2427, 2432, 2437, 2442, 2447, 2452, 2457, 2462
+    };
+    private static final int[] CHANNELS_5 = {
+        5180, 5200, 5220, 5240, 5745, 5765, 5785, 5805, 5825
+    };
+
+    private void pickBand() {
+        new AlertDialog.Builder(this).setTitle("Choose a Wi-Fi band")
+            .setItems(new String[] {"2.4 GHz", "5 GHz"}, (dialog, which) ->
+                pickChannel(which == 0 ? CHANNELS_24 : CHANNELS_5))
+            .setNegativeButton("Cancel", null).show();
+    }
+
+    private static String channelLabel(int frequency) {
+        boolean lowBand = frequency < 2500;
+        int channel = (frequency - (lowBand ? 2407 : 5000)) / 5;
+        return "Channel " + channel + " · " + (lowBand ? "2.4 GHz" : "5 GHz");
+    }
+
+    private void pickChannel(int[] frequencies) {
+        String[] channels = new String[frequencies.length];
+        for (int index = 0; index < channels.length; index++) {
+            channels[index] = channelLabel(frequencies[index]);
+        }
         new AlertDialog.Builder(this).setTitle("Choose a Wi-Fi channel")
             .setItems(channels, (dialog, which) -> pickDuration(frequencies[which]))
             .setNegativeButton("Cancel", null).show();
+    }
+
+    private void pickScanBand() {
+        String[] bands = {"Both bands", "2.4 GHz only", "5 GHz only"};
+        String[] arguments = {"all", "24", "5"};
+        new AlertDialog.Builder(this).setTitle("Scan channels")
+            .setItems(bands, (dialog, which) -> {
+                showScanWhenReady = true;
+                action("scan " + arguments[which], "Starting passive scan…");
+            })
+            .setNeutralButton("Last results", (dialog, which) -> showScanResults())
+            .setNegativeButton("Cancel", null).show();
+    }
+
+    private void showScanResults() {
+        commands.execute(() -> {
+            Result result = run("scan-results");
+            List<Integer> frequencies = new ArrayList<>();
+            List<String> labels = new ArrayList<>();
+            if (result.code == 0) {
+                for (String line : result.output.split("\n")) {
+                    String[] fields = line.split("\t", 3);
+                    if (fields.length != 3 || !fields[0].matches("[0-9]{4}")) continue;
+                    int frequency = Integer.parseInt(fields[0]);
+                    frequencies.add(frequency);
+                    labels.add(fields[2] + "\n" + channelLabel(frequency) + " · " + fields[1]);
+                }
+            }
+            main.post(() -> {
+                if (!foreground || active || runningCommand) return;
+                AlertDialog.Builder dialog = new AlertDialog.Builder(this)
+                    .setTitle("Networks found").setNegativeButton("Close", null);
+                if (labels.isEmpty()) {
+                    dialog.setMessage(result.code == 0
+                        ? "No beacons were heard during the scan."
+                        : "Run a channel scan first.");
+                } else {
+                    dialog.setItems(labels.toArray(new String[0]), (unused, which) ->
+                        pickDuration(frequencies.get(which)));
+                }
+                dialog.show();
+            });
+        });
     }
 
     private void pickDuration(int frequency) {
@@ -285,7 +357,12 @@ public final class MainActivity extends Activity {
                     usbActive = lines[0].equals("usb");
                     active = usbActive || lines[0].equals("active");
                     statusTitle.setText(active ? "Session active" : "Ready");
-                    statusText.setText(lines.length == 2 ? lines[1] : "");
+                    String message = lines.length == 2 ? lines[1] : "";
+                    statusText.setText(message);
+                    if (showScanWhenReady && !active) {
+                        showScanWhenReady = false;
+                        if (message.startsWith("Channel scan complete")) showScanResults();
+                    }
                 } else {
                     statusTitle.setText("Root access needed");
                     statusText.setText("Allow NetHunter Launcher in Magisk. " + result.output);
@@ -336,6 +413,7 @@ public final class MainActivity extends Activity {
 
     private void updateButtons() {
         capture.setEnabled(authenticated && !runningCommand && !active);
+        scan.setEnabled(authenticated && !runningCommand && !active);
         bluetooth.setEnabled(authenticated && !runningCommand && !active);
         usb.setEnabled(authenticated && !runningCommand && !active);
         testKey.setVisibility(usbActive ? View.VISIBLE : View.GONE);
