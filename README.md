@@ -32,7 +32,8 @@ The public OnePlus source checkouts are the starting point for the build. The co
 
 - [Firmware source, extraction and AVB verification](docs/firmware.md)
 - [Host build and ABI checks](docs/build.md)
-- [BadBluetooth setup and on-phone recovery](docs/badbluetooth.md)
+- [BadBluetooth setup](docs/badbluetooth.md)
+- [On-phone recovery and official APK rollback](docs/recovery.md)
 - [NetHunter 2026.3 Prefix None app fix](docs/nethunter-app-fix.md)
 - [Verified lab results](docs/results.md)
 - [Licensing and credits](LICENSE.md)

@@ -1,0 +1,20 @@
+#!/system/bin/sh
+set -eu
+pkg=com.offsec.nethunter
+base=/data/adb/nh-open/nethunter-app-rollback
+test "$(id -u)" = 0
+(cd "$base" && sha256sum -c SHA256SUMS)
+am force-stop "$pkg"
+for entry in user/0 user_de/0; do
+    dir=/data/$entry/$pkg
+    name=$(echo "$entry" | tr / _)
+    owner=$(stat -c '%u:%g' "$dir")
+    tar -xf "$base/$name.tar" -C "$dir"
+    chown -R "$owner" "$dir"
+    restorecon -RF "$dir"
+done
+for permission in ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION BLUETOOTH_CONNECT BLUETOOTH_SCAN NEARBY_WIFI_DEVICES POST_NOTIFICATIONS; do
+    if grep -q "android.permission.$permission: granted=true" "$base/package-state.txt"; then
+        pm grant "$pkg" "android.permission.$permission"
+    fi
+done

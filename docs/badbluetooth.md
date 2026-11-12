@@ -52,4 +52,4 @@ cp btk_server.py send_string.py keymap.py kb_client.py sdp_record.xml \
 mv "$staged" "$backup"
 ```
 
-After an Arsenal reinstall, tap **Stop** if the server is running. If needed, request the controller back with `/data/adb/nh-open/nh-open bluetooth-stop`. Once the session ends, run `/data/adb/nh-open/nh-badbt-repair --check`. If it reports changed files, run `--restore` and then `--check` with the same helper. This restores the launcher and the listed support files. A changed APK needs the corresponding APK rollback.
+After an Arsenal reinstall, tap **Stop** if the server is running. If needed, request the controller back with `/data/adb/nh-open/nh-open bluetooth-stop`. Once the session ends, run `/data/adb/nh-open/nh-badbt-repair --check`. If it reports changed files, run `--restore` and then `--check` with the same helper. This restores the launcher and the listed support files. See [the recovery guide](recovery.md) for the on-phone checklist and official APK rollback.

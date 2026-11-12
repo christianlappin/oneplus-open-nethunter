@@ -22,6 +22,6 @@ apksigner sign --ks /absolute/path/to/your-keystore.jks --out nethunter-fixed.ap
 apksigner verify --verbose --print-certs nethunter-fixed.apk
 ```
 
-Android requires a matching signature for an in-place update. Save the official APK, app data and settings before replacing it with your locally signed build. Reinstalling either build under a different signing key requires uninstalling the currently installed one and restoring settings from backup. Keep the signing key private. Future locally signed updates should use the same key. The Kali filesystem and device launchers are separate from the Android app data.
+Android requires a matching signature for an in-place update. [Save the official APK, app data and settings](recovery.md#save-the-official-apk-and-settings-before-switching-builds) before replacing it with your locally signed build. Reinstalling either build under a different signing key requires uninstalling the currently installed one and restoring settings from backup. Keep the signing key private. Future locally signed updates should use the same key. The Kali filesystem and device launchers are separate from the Android app data.
 
 With the patched server files installed, use the [BadBluetooth app procedure](badbluetooth.md). Use an exclusive input receiver to verify the selected preset as keyboard events. See [the test results](results.md) for the tested firmware and scope.
