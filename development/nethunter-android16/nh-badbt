@@ -4,8 +4,13 @@ set -eu
 nh=/data/adb/nh-open/nh-open
 state=/dev/.nh-open-bt
 lock=/dev/.nh-open-badbt-lock
+mode=cli
+if [ "${1:-}" = --app ]; then
+    mode=app
+    shift
+fi
 if [ "$#" -ne 1 ] || ! printf '%s\n' "$1" | grep -Eq '^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$'; then
-    echo 'Usage: nh-badbt <authorized Bluetooth receiver address>' >&2
+    echo 'Usage: nh-badbt [--app] <authorized Bluetooth receiver address>' >&2
     exit 2
 fi
 mkdir "$lock"
@@ -28,11 +33,13 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' HUP INT TERM
 test ! -e "$state/active"
-"$nh" bluetooth-start 320
+lease=320
+if [ "$mode" = app ]; then lease=500; fi
+"$nh" bluetooth-start "$lease"
 lease_started=1
 for attempt in $(seq 1 15); do
     [ ! -e /sys/class/bluetooth/hci0 ] || break
     sleep 1
 done
 test -e /sys/class/bluetooth/hci0
-"$nh" exec sh /root/badbt/run-badbt.sh "$1"
+"$nh" exec sh /root/badbt/run-badbt.sh "$1" "$mode"

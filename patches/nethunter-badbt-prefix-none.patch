@@ -1,0 +1,10 @@
+--- a/src/com/offsec/nethunter/BTFragment.java
++++ b/src/com/offsec/nethunter/BTFragment.java
+@@ -1784,6 +1784,7 @@
+                             break;
+                         case "None":
+                             BadBTUACView.setVisibility(View.GONE);
++                            prefixCMD = "-";
+                             uacCMD = "-";
+                             uacCheckBox.setChecked(false);
+                             presets_uac.clear();

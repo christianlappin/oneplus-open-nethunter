@@ -1,6 +1,20 @@
 --- a/btk_server.py
 +++ b/btk_server.py
-@@ -18,8 +18,6 @@
+@@ -6,6 +6,7 @@
+ from __future__ import absolute_import, print_function
+ from optparse import OptionParser, make_option
+ import os
++from pathlib import Path
+ import sys
+ import uuid
+ import dbus
+@@ -13,13 +14,12 @@
+ import dbus.mainloop.glib
+ import time
+ import socket
++import select
+ import getopt
+ from gi.repository import GLib
  from dbus.mainloop.glib import DBusGMainLoop
  import logging
  from logging import debug, info, warning, error
@@ -9,7 +23,7 @@
  import subprocess
  
  # UUID Fix
-@@ -49,11 +47,6 @@
+@@ -49,11 +49,6 @@
      # configure the bluetooth hardware device
      def init_bt_device(self):
          print("3. Configuring Device name: " + self.bt_name)
@@ -21,41 +35,106 @@
          # set the device class to a keybord and set the name
          os.system("hciconfig " + self.if_name + " up")
          os.system("hciconfig " + self.if_name + " name \"" + self.bt_name + "\"")
-@@ -87,6 +80,14 @@
+@@ -87,32 +82,65 @@
          return fh.read()
  
      # listen for incoming client connections
 +    @staticmethod
 +    def accept_peer(listener):
-+        while True:
-+            connection, address = listener.accept()
-+            if address[0].upper() == peer_address:
-+                return connection, address
++        connection, address = listener.accept()
++        if address[0].upper() != peer_address:
 +            connection.close()
++            return None
++        return connection
 +
      def listen(self):
-         print("\033[0;33m7. Waiting for connections\033[0m")
-         self.scontrol = socket.socket(
-@@ -103,11 +104,11 @@
-         self.scontrol.listen(5)
-         self.sinterrupt.listen(5)
- 
+-        print("\033[0;33m7. Waiting for connections\033[0m")
+-        self.scontrol = socket.socket(
+-            socket.AF_BLUETOOTH, socket.SOCK_SEQPACKET, socket.BTPROTO_L2CAP)  # BluetoothSocket(L2CAP)
+-        self.sinterrupt = socket.socket(
+-            socket.AF_BLUETOOTH, socket.SOCK_SEQPACKET, socket.BTPROTO_L2CAP)  # BluetoothSocket(L2CAP)
+-        self.scontrol.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+-        self.sinterrupt.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+-        # bind these sockets to a port - port zero to select next available
+-        self.scontrol.bind((socket.BDADDR_ANY, self.P_CTRL))
+-        self.sinterrupt.bind((socket.BDADDR_ANY, self.P_INTR))
+-
+-        # Start listening on the server sockets
+-        self.scontrol.listen(5)
+-        self.sinterrupt.listen(5)
+-
 -        self.ccontrol, cinfo = self.scontrol.accept()
-+        self.ccontrol, cinfo = self.accept_peer(self.scontrol)
-         print (
-             "\033[0;32mGot a connection on the control channel from %s \033[0m" % cinfo[0])
- 
+-        print (
+-            "\033[0;32mGot a connection on the control channel from %s \033[0m" % cinfo[0])
+-
 -        self.cinterrupt, cinfo = self.sinterrupt.accept()
-+        self.cinterrupt, cinfo = self.accept_peer(self.sinterrupt)
-         print (
-             "\033[0;32mGot a connection on the interrupt channel from %s \033[0m" % cinfo[0])
+-        print (
+-            "\033[0;32mGot a connection on the interrupt channel from %s \033[0m" % cinfo[0])
++        self.scontrol = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_SEQPACKET, socket.BTPROTO_L2CAP)
++        self.sinterrupt = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_SEQPACKET, socket.BTPROTO_L2CAP)
++        for listener, port in ((self.scontrol, self.P_CTRL), (self.sinterrupt, self.P_INTR)):
++            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
++            listener.bind((socket.BDADDR_ANY, port))
++            listener.listen(5)
++        self.ccontrol = None
++        self.cinterrupt = None
++        self.accept_session()
++
++    def accept_session(self):
++        errors = select.POLLHUP | select.POLLERR | select.POLLNVAL
++        print("Waiting for the authorized receiver")
++        while True:
++            control = self.accept_peer(self.scontrol)
++            if control is None:
++                continue
++            poll = select.poll()
++            poll.register(control, errors)
++            poll.register(self.sinterrupt, select.POLLIN)
++            events = dict(poll.poll(8000))
++            interrupt_ready = events.get(self.sinterrupt.fileno(), 0) & select.POLLIN
++            if not events.get(control.fileno(), 0) & errors and interrupt_ready:
++                interrupt = self.accept_peer(self.sinterrupt)
++                interrupt_ready = False
++                if interrupt is not None:
++                    self.ccontrol, self.cinterrupt = control, interrupt
++                    print("Authorized HID control and interrupt channels connected")
++                    for channel in (control, interrupt):
++                        GLib.io_add_watch(channel.fileno(), GLib.IO_HUP | GLib.IO_ERR, self.session_closed)
++                    return False
++            control.close()
++            # Drop a pending interrupt channel from the incomplete attempt.
++            if interrupt_ready:
++                pending, _ = self.sinterrupt.accept()
++                pending.close()
++
++    def session_closed(self, fd, condition):
++        if self.ccontrol is None or fd not in (self.ccontrol.fileno(), self.cinterrupt.fileno()):
++            return False
++        self.ccontrol.close()
++        self.cinterrupt.close()
++        self.ccontrol = self.cinterrupt = None
++        GLib.idle_add(self.accept_session)
++        return False
  
-@@ -165,7 +166,13 @@
+     # send a string to the bluetooth host machine
+     def send_string(self, message):
++        if self.cinterrupt is None:
++            raise RuntimeError("The authorized receiver is disconnected.")
+         try:
+             self.cinterrupt.send(bytes(message))
+         except OSError as err:
+@@ -165,7 +193,19 @@
      MY_DEV_NAME = "Keyboard"
      bt_name = MY_DEV_NAME
      if_name = 'hci0'
 -    sopts = 'hn:i:c:a'
-+    peer_address = os.environ.get('NH_BADBT_PEER', '').upper()
++    peer_address = os.environ.get('NH_BADBT_PEER', '')
++    if not peer_address:
++        try:
++            peer_address = Path(__file__).with_name('.app-peer').read_text().strip()
++        except FileNotFoundError:
++            pass
++    peer_address = peer_address.upper()
 +    if len(peer_address.split(':')) != 6 or any(
 +        len(part) != 2 or any(c not in '0123456789ABCDEF' for c in part)
 +        for part in peer_address.split(':')

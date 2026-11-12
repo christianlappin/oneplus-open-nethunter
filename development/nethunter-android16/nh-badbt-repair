@@ -1,0 +1,53 @@
+#!/system/bin/sh
+set -eu
+base=/data/adb/nh-open
+backup=$base/badbt-recovery
+target=/data/local/nhsystem/kali-arm64/root/badbt
+expected_kernel=5.15.180-android13-8-o-01177-gea9ad0c186c5
+files='btk_server.py send_string.py keymap.py kb_client.py sdp_record.xml org.thanhle.btkbservice.conf run-badbt.sh bluez-bredr.conf'
+
+[ "$(id -u)" = 0 ] || { echo 'Run from an Android Magisk root shell.' >&2; exit 1; }
+[ "$(uname -r)" = "$expected_kernel" ] || { echo 'The running kernel differs from the verified build.' >&2; exit 1; }
+case "${1:---check}" in
+    --check) restore=0 ;;
+    --restore) restore=1 ;;
+    *) echo 'Usage: nh-badbt-repair [--check|--restore]' >&2; exit 2 ;;
+esac
+(cd "$backup" && sha256sum -c SHA256SUMS)
+
+if [ "$restore" = 1 ]; then
+    if [ -e /dev/.nh-open-bt/active ] ||
+       pgrep -f '^python3 (-u )?(/root/badbt/)?btk_server\.py( |$)' >/dev/null ||
+       pgrep -f '^sh /root/badbt/run-badbt\.sh( |$)' >/dev/null; then
+        echo 'Stop the BadBluetooth session before restoring files.' >&2
+        exit 1
+    fi
+    rmdir /dev/.nh-open-badbt-lock 2>/dev/null || true
+    rm -f "$target/.app-peer"
+    mkdir -p "$target"
+    chmod 700 "$target"
+    restore_file() {
+        temporary=$(mktemp "$2.repair.XXXXXX")
+        cat "$1" >"$temporary"
+        chmod "$3" "$temporary"
+        mv -f "$temporary" "$2"
+    }
+    restore_file "$backup/nh-badbt" "$base/nh-badbt" 700
+    for name in $files; do
+        restore_file "$backup/$name" "$target/$name" 600
+    done
+fi
+
+status=0
+for name in $files; do
+    if ! cmp -s "$backup/$name" "$target/$name"; then
+        echo "Changed or missing: $name"
+        status=1
+    fi
+done
+if ! cmp -s "$backup/nh-badbt" "$base/nh-badbt"; then
+    echo 'Changed or missing: nh-badbt'
+    status=1
+fi
+[ "$status" = 0 ] && echo 'BadBluetooth files match the saved verified copies.'
+exit "$status"
