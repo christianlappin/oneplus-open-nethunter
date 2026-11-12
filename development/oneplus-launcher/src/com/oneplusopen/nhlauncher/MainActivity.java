@@ -41,6 +41,8 @@ public final class MainActivity extends Activity {
     private static final int LINE = 0xffd7dfd8;
     private static final int NEARBY_PERMISSION = 1;
     private static final int ENABLE_BLUETOOTH = 2;
+    private static final int MAX_CAPTURE_SECONDS = 1770;
+    private static final String MAC_ADDRESS = "([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}";
     private static final String CONTROLLER = "/data/adb/nh-open/nh-launcher";
 
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -158,7 +160,7 @@ public final class MainActivity extends Activity {
             channels[index] = channelLabel(frequencies[index]);
         }
         new AlertDialog.Builder(this).setTitle("Choose a Wi-Fi channel")
-            .setItems(channels, (dialog, which) -> pickDuration(frequencies[which]))
+            .setItems(channels, (dialog, which) -> pickDuration(frequencies[which], "", ""))
             .setNegativeButton("Cancel", null).show();
     }
 
@@ -178,13 +180,18 @@ public final class MainActivity extends Activity {
         commands.execute(() -> {
             Result result = run("scan-results");
             List<Integer> frequencies = new ArrayList<>();
+            List<String> addresses = new ArrayList<>();
+            List<String> names = new ArrayList<>();
             List<String> labels = new ArrayList<>();
             if (result.code == 0) {
                 for (String line : result.output.split("\n")) {
                     String[] fields = line.split("\t", 3);
-                    if (fields.length != 3 || !fields[0].matches("[0-9]{4}")) continue;
+                    if (fields.length != 3 || !fields[0].matches("[0-9]{4}") ||
+                        !fields[1].matches(MAC_ADDRESS)) continue;
                     int frequency = Integer.parseInt(fields[0]);
                     frequencies.add(frequency);
+                    addresses.add(fields[1]);
+                    names.add(fields[2]);
                     labels.add(fields[2] + "\n" + channelLabel(frequency) + " · " + fields[1]);
                 }
             }
@@ -198,20 +205,57 @@ public final class MainActivity extends Activity {
                         : "Run a channel scan first.");
                 } else {
                     dialog.setItems(labels.toArray(new String[0]), (unused, which) ->
-                        pickDuration(frequencies.get(which)));
+                        pickDuration(frequencies.get(which), addresses.get(which), names.get(which)));
                 }
                 dialog.show();
             });
         });
     }
 
-    private void pickDuration(int frequency) {
-        String[] labels = {"15 seconds", "30 seconds", "60 seconds"};
+    private void pickDuration(int frequency, String address, String name) {
+        String[] labels = {"15 seconds", "30 seconds", "60 seconds", "Custom duration"};
         int[] seconds = {15, 30, 60};
-        new AlertDialog.Builder(this).setTitle("Capture duration")
-            .setItems(labels, (dialog, which) -> action("wifi " + frequency + " " + seconds[which],
-                "Starting Wi-Fi capture…"))
+        String title = address.isEmpty() ? "Capture duration" : "Capture " + name + " beacons";
+        new AlertDialog.Builder(this).setTitle(title)
+            .setItems(labels, (dialog, which) -> {
+                if (which < seconds.length) startCapture(frequency, address, seconds[which]);
+                else enterDuration(frequency, address);
+            })
             .setNegativeButton("Cancel", null).show();
+    }
+
+    private void enterDuration(int frequency, String address) {
+        EditText input = new EditText(this);
+        input.setSingleLine();
+        input.setInputType(InputType.TYPE_CLASS_NUMBER);
+        input.setHint("Seconds");
+        LinearLayout box = column();
+        box.setPadding(dp(24), 0, dp(24), 0);
+        box.addView(input);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Custom duration")
+            .setMessage("Enter 1–" + MAX_CAPTURE_SECONDS + " seconds. Android Wi-Fi pauses during capture.")
+            .setView(box).setNegativeButton("Cancel", null).setPositiveButton("Start", null).create();
+        dialog.setOnShowListener(unused -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            int seconds;
+            try {
+                seconds = Integer.parseInt(input.getText().toString());
+            } catch (NumberFormatException error) {
+                seconds = 0;
+            }
+            if (seconds < 1 || seconds > MAX_CAPTURE_SECONDS) {
+                input.setError("Enter 1–" + MAX_CAPTURE_SECONDS + " seconds.");
+                return;
+            }
+            dialog.dismiss();
+            startCapture(frequency, address, seconds);
+        }));
+        dialog.show();
+    }
+
+    private void startCapture(int frequency, String address, int seconds) {
+        String options = frequency + " " + seconds;
+        String command = address.isEmpty() ? "wifi " + options : "wifi-ap " + options + " " + address;
+        action(command, "Starting Wi-Fi capture…");
     }
 
     private void pickUsbHost() {

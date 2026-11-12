@@ -44,7 +44,11 @@ cleanup() {
             fi
         elif [ -s "$chroot$file" ]; then
             if mkdir -p "$downloads" && mv -f "$chroot$file" "$downloads/$name"; then
-                message "Capture saved in Downloads/NetHunter/$name"
+                if [ -n "${access_point:-}" ] && [ "$(stat -c %s "$downloads/$name")" -eq 24 ]; then
+                    message "No beacons from the selected access point. Empty PCAP saved in Downloads/NetHunter/$name"
+                else
+                    message "Capture saved in Downloads/NetHunter/$name"
+                fi
             else
                 message 'Could not save capture to Downloads. See the session log.'
             fi
@@ -82,14 +86,23 @@ run_wifi() {
     name="wifi-$(date +%Y%m%d-%H%M%S)-$$.pcap"
     file="/tmp/$name"
     duration=$2
+    access_point=${3:-}
+    filter='type mgt subtype beacon'
+    if [ -n "$access_point" ]; then
+        filter="$filter and wlan addr3 $access_point"
+    fi
     start_monitor "$1" "$((duration + 30))"
-    "$nh" exec tcpdump -n -U -i nhmon0 -Z root -w "$file" 'type mgt subtype beacon' &
+    "$nh" exec tcpdump -n -U -i nhmon0 -Z root -w "$file" "$filter" &
     child=$!
     for second in $(seq 1 "$duration"); do
         [ ! -e "$state/stop" ] && kill -0 "$child" 2>/dev/null || return 0
         if [ -s "$chroot$file" ] && [ ! -e "$state/ready" ]; then
             touch "$state/ready"
-            message "Capturing Wi-Fi beacons. Stops automatically after $duration seconds."
+            if [ -n "$access_point" ]; then
+                message "Capturing beacons from $access_point for up to $duration seconds."
+            else
+                message "Capturing Wi-Fi beacons. Stops automatically after $duration seconds."
+            fi
         fi
         sleep 1
     done
@@ -190,12 +203,21 @@ usb_restore() {
 
 [ "$(id -u)" = 0 ] || { echo 'Magisk root is required.' >&2; exit 1; }
 case "${1:-status}" in
-    wifi|scan|bluetooth)
+    wifi|wifi-ap|scan|bluetooth)
         mode=$1
+        access_point=
+        if [ "$mode" = wifi-ap ]; then
+            access_point=${4:-}
+            printf '%s\n' "$access_point" | grep -Eq '^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$' ||
+                { echo 'Invalid access-point address.'; exit 2; }
+            mode=wifi
+        fi
         if [ "$mode" = wifi ] || [ "$mode" = scan ]; then
             if [ "$mode" = wifi ]; then
                 case " $channels24 $channels5 " in *" ${2:-none} "*) ;; *) exit 2 ;; esac
-                case "${3:-}" in 15|30|60) ;; *) exit 2 ;; esac
+                case "${3:-}" in ''|0*|*[!0-9]*) exit 2 ;; esac
+                [ "${#3}" -le 4 ] && [ "$3" -le 1770 ] ||
+                    { echo 'Capture duration must be between 1 and 1770 seconds.'; exit 2; }
             else
                 case "${2:-}" in 24|5|all) ;; *) exit 2 ;; esac
                 [ -r "$base/nh-scan-beacons.py" ] || { echo 'Install the scan helper first.'; exit 1; }
@@ -213,14 +235,14 @@ case "${1:-status}" in
         message 'Starting session…'
         # Android Binder commands need a pipe for their output descriptors.
         nohup /system/bin/sh -c '"$@" 2>&1 | /system/bin/cat' sh \
-            /system/bin/sh "$0" worker "$mode" "$2" "${3:-}" >"$base/launcher.log" 2>&1 </dev/null &
+            /system/bin/sh "$0" worker "$mode" "$2" "${3:-}" "$access_point" >"$base/launcher.log" 2>&1 </dev/null &
         ;;
     worker)
         mode=$2
         trap cleanup EXIT
         trap 'exit 130' HUP INT TERM
         case "$mode" in
-            wifi) run_wifi "$3" "$4" ;;
+            wifi) run_wifi "$3" "$4" "${5:-}" ;;
             scan) run_scan "$3" ;;
             bluetooth) run_bluetooth "$3" ;;
         esac
