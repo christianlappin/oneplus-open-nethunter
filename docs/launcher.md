@@ -38,3 +38,41 @@ adb install -r NetHunter-Launcher.apk
 ```
 
 Open **NetHunter Launcher** from the app drawer and approve its Magisk request. Use the same signing key for future updates. The app requires the device-specific scripts to be installed first. See [BadBluetooth setup](badbluetooth.md), [device build instructions](build.md), and [recovery](recovery.md).
+
+## Update Kali packages on the phone
+
+End any launcher session with **Restore normal mode**, stop any KeX session, and connect Android to Wi-Fi. Open a root Kali shell in NetHunter Terminal. Refresh APT and review the proposed upgrades, dependencies, and removals.
+
+```sh
+apt-get update
+apt-get -s full-upgrade
+apt-get --download-only full-upgrade
+```
+
+After the download succeeds, run the upgrade from the same Kali shell. This procedure keeps locally modified package configuration files and uses a temporary service policy if the chroot has none. The policy prevents package scripts from starting or restarting services during the upgrade.
+
+```sh
+(
+    set -eu
+    export DEBIAN_FRONTEND=noninteractive UCF_FORCE_CONFFOLD=1 NEEDRESTART_MODE=l
+    policy=/usr/sbin/policy-rc.d
+    if [ ! -e "$policy" ] && [ ! -L "$policy" ]; then
+        temporary=$(mktemp /usr/sbin/.nh-update-policy.XXXXXX)
+        cleanup() {
+            if [ "$temporary" -ef "$policy" ]; then rm -f "$policy"; fi
+            rm -f "$temporary"
+        }
+        trap cleanup EXIT
+        trap 'exit 130' HUP INT TERM
+        printf '#!/bin/sh\nexit 101\n' >"$temporary"
+        chmod 755 "$temporary"
+        ln "$temporary" "$policy"
+    fi
+    apt-get --no-download -o Dpkg::Options::=--force-confold full-upgrade
+    dpkg --audit
+    apt-get check
+    apt-get -s full-upgrade
+)
+```
+
+Open NetHunter from the launcher and test a short passive capture. Confirm that Android reconnects to Wi-Fi after the capture. See the [post-upgrade results](results.md#kali-upgrade-on-the-phone) for the checks run on this build. [Kali package update guide](https://www.kali.org/docs/general-use/updating-kali/)

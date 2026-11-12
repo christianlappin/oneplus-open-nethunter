@@ -20,6 +20,20 @@ The tested Wi-Fi module SHA-256 was `6e895b099586f384ebc14628889f4a9e0c2e7d495c0
 
 The test path enforces a 10 packet-per-second cap. Firmware rewrote Duration to 202 microseconds in the observed data and RTS cases and can retry frames. Other control-frame subtypes, performance at higher rates, and other firmware builds remain outside the verified scope. BadBluetooth CLI and app results apply to an owned Kali receiver. The preset test checked delivered keyboard events. OS-specific prefix execution was outside the test.
 
+## Kali upgrade on the phone
+
+On November 11, 2026, APT downloaded 951 MB over Android Wi-Fi and completed a Kali Rolling full upgrade in the NetHunter chroot. It upgraded 634 packages, installed 12 dependencies, and replaced `libfalcosecurity0t64` with `libfalcosecurity0.23`. The updated `kali-linux-core` metapackage was version `2026.4.2`. The upgrade kept locally modified package configuration files. The temporary service policy used during installation was removed.
+
+| Post-upgrade check | Observed result |
+| --- | --- |
+| Package integrity | `dpkg --audit` and `apt-get check` passed. A subsequent full-upgrade simulation showed zero pending changes. |
+| Android app and launcher | **Open NetHunter** from Launcher 1.1 opened the NetHunter 2026.3 app. |
+| Passive capture and Wi-Fi restoration | A 15-second channel 1 capture through the launcher saved a PCAP with 757 packets and zero kernel drops. The stock driver returned and Android reconnected to Wi-Fi without a reboot. |
+| BadBluetooth | The launcher started the keyboard server and reached its listening state. Stopping it returned the controller to Android. |
+| KeX | TigerVNC 1.16.2 started a temporary XFCE desktop with Xfwm4. A loopback VNC handshake confirmed that the server required password authentication. The temporary session was stopped. |
+
+Kali also loaded the Bluetooth Python dependencies under Python 3.14.7. The phone finished the tests in normal mode with Wi-Fi connected. Follow the [on-phone upgrade procedure](launcher.md#update-kali-packages-on-the-phone) to reproduce the maintenance steps.
+
 ## Publication checks
 
 The original publication patches passed application checks against their pinned sources or matching extracted NetHunter app assets. The host radiotap suite passed 100,000 fuzz inputs and the TX admission suite passed 2,048 subtype and truncation inputs. The saved tested WLAN artifact passed its ABI and callback-layout checks, with 63 shared callbacks and zero offset mismatches. The three published image hashes matched the extracted reference files. The public AVB script reproduced the result using the recorded pre-unlock properties as an ADB fixture.
