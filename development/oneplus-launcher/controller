@@ -121,7 +121,7 @@ cleanup() {
 }
 
 start_monitor() {
-    "$monitor" run passive "$1" "$2" &
+    "$monitor" run passive "$1" "$2" "$$" &
     launcher=$!
     wait_for_monitor
 }
@@ -225,7 +225,13 @@ run_wifi() {
     file="/tmp/$name"
     duration=$2
     access_point=${3:-}
-    start_monitor "$1" "$((duration + 30))"
+    monitor_duration=until-stopped
+    duration_label='until stopped'
+    if [ "$duration" != until-stopped ]; then
+        monitor_duration=$((duration + 30))
+        duration_label="for up to $duration seconds"
+    fi
+    start_monitor "$1" "$monitor_duration"
     if [ "$mode" = survey ]; then
         survey_dir=$(mktemp -d "$chroot/tmp/nh-survey.XXXXXX")
         survey_dir=${survey_dir#"$chroot"}
@@ -236,7 +242,11 @@ run_wifi() {
         set -- --channel "$channel" --background 1 --write-interval 1 \
             --output-format pcap,csv --write "$survey_prefix"
         if [ -n "$access_point" ]; then set -- "$@" --bssid "$access_point"; fi
-        "$nh" exec env TERM=dumb timeout -k 3 -s INT "$duration" airodump-ng "$@" nhmon0 &
+        set -- airodump-ng "$@" nhmon0
+        if [ "$duration" != until-stopped ]; then
+            set -- timeout -k 3 -s INT "$duration" "$@"
+        fi
+        "$nh" exec env TERM=dumb --default-signal=INT,QUIT "$@" &
     else
         filter='type mgt subtype beacon'
         if [ "$mode" = lab ]; then
@@ -247,21 +257,24 @@ run_wifi() {
         "$nh" exec tcpdump -n -U -i nhmon0 -Z root -w "$file" "$filter" &
     fi
     child=$!
-    for second in $(seq 1 "$duration"); do
-        [ ! -e "$state/stop" ] && kill -0 "$child" 2>/dev/null || return 0
+    elapsed=0
+    while [ "$duration" = until-stopped ] || [ "$elapsed" -lt "$duration" ]; do
+        [ ! -e "$state/stop" ] && kill -0 "$child" 2>/dev/null &&
+            kill -0 "$launcher" 2>/dev/null || return 0
         if [ -s "$chroot$file" ] && [ ! -e "$state/ready" ]; then
             touch "$state/ready"
             if [ "$mode" = survey ]; then
-                message "Running a passive Airodump-ng survey for up to $duration seconds."
+                message "Running a passive Airodump-ng survey $duration_label."
             elif [ "$mode" = lab ]; then
-                message "Capturing frames involving the selected access point for up to $duration seconds."
+                message "Capturing frames involving the selected access point $duration_label."
             elif [ -n "$access_point" ]; then
-                message "Capturing beacons from $access_point for up to $duration seconds."
+                message "Capturing beacons from $access_point $duration_label."
             else
-                message "Capturing Wi-Fi beacons. Stops automatically after $duration seconds."
+                message "Capturing Wi-Fi beacons $duration_label."
             fi
         fi
         sleep 1
+        elapsed=$((elapsed + 1))
     done
 }
 
@@ -353,15 +366,25 @@ run_kismet() {
             echo "Port 12501 is already in use." >&2
             exit 1
         fi
-        exec timeout -k 4 900 kismet --no-ncurses-wrapper --no-line-wrap \
-            --homedir "$work" --override "$work/override.conf" -n -c "$1:type=pcapfile,pps=200"
-    ' sh "$path" </dev/null &
+        source="$1:type=pcapfile,pps=200"
+        duration=$2
+        set -- kismet --no-ncurses-wrapper --no-line-wrap \
+            --homedir "$work" --override "$work/override.conf" -n -c "$source"
+        if [ "$duration" != until-stopped ]; then
+            set -- timeout -k 4 900 "$@"
+        fi
+        exec "$@"
+    ' sh "$path" "${2:-}" </dev/null &
     child=$!
     for attempt in $(seq 1 20); do
         [ ! -e "$state/stop" ] && kill -0 "$child" 2>/dev/null || return 1
         if "$nh" exec curl -fsS --max-time 1 http://127.0.0.1:12501/ -o /dev/null >/dev/null 2>&1; then
             touch "$state/ready"
-            message 'Kismet replay ready. Open Kismet from Wireless tools. Ends after 15 minutes.'
+            if [ "${2:-}" = until-stopped ]; then
+                message 'Kismet replay ready. Use Restore normal mode when finished.'
+            else
+                message 'Kismet replay ready. Open Kismet from Wireless tools. Ends after 15 minutes.'
+            fi
             break
         fi
         sleep 1
@@ -409,12 +432,15 @@ case "${1:-status}" in
         fi
         if [ "$mode" = kismet ]; then
             capture_path "${2:-}"
+            case "${3:-}" in ''|until-stopped) ;; *) exit 2 ;; esac
         elif [ "$mode" != bluetooth ]; then
             if [ "$mode" != scan ]; then
                 case " $channels24 $channels5 " in *" ${2:-none} "*) ;; *) exit 2 ;; esac
-                case "${3:-}" in ''|0*|*[!0-9]*) exit 2 ;; esac
-                [ "${#3}" -le 4 ] && [ "$3" -le 1770 ] ||
-                    { echo 'Capture duration must be between 1 and 1770 seconds.'; exit 2; }
+                if [ "${3:-}" != until-stopped ]; then
+                    case "${3:-}" in ''|0*|*[!0-9]*) exit 2 ;; esac
+                    [ "${#3}" -le 4 ] && [ "$3" -le 1770 ] ||
+                        { echo 'Capture duration must be between 1 and 1770 seconds.'; exit 2; }
+                fi
             else
                 case "${2:-}" in 24|5|all) ;; *) exit 2 ;; esac
                 [ -r "$base/nh-scan-beacons.py" ] || { echo 'Install the scan helper first.'; exit 1; }
@@ -442,7 +468,7 @@ case "${1:-status}" in
             wifi|lab|survey) run_wifi "$3" "$4" "${5:-}" ;;
             scan) run_scan "$3" ;;
             bluetooth) run_bluetooth "$3" ;;
-            kismet) run_kismet "$3" ;;
+            kismet) run_kismet "$3" "${4:-}" ;;
         esac
         ;;
     usb)

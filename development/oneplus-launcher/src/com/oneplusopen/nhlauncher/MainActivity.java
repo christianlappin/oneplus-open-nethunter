@@ -253,10 +253,7 @@ public final class MainActivity extends Activity {
     }
 
     private void pickDuration(String mode, int frequency, String address, String name) {
-        String[] labels = {"15 seconds", "30 seconds", "60 seconds", "Custom duration"};
-        if (mode.equals("wifite")) {
-            labels = new String[] {"15 seconds", "30 seconds", "60 seconds", "Custom duration", "Until stopped"};
-        }
+        String[] labels = {"15 seconds", "30 seconds", "60 seconds", "Custom duration", "Until stopped"};
         int[] seconds = {15, 30, 60};
         String title = mode.equals("wifite") ? (address.isEmpty() ? "Wifite discovery duration" : "Wifite audit duration")
             : mode.equals("survey") ? "Airodump-ng survey duration"
@@ -264,9 +261,9 @@ public final class MainActivity extends Activity {
             : address.isEmpty() ? "Capture duration" : "Capture " + name + " beacons";
         new AlertDialog.Builder(this).setTitle(title)
             .setItems(labels, (dialog, which) -> {
-                if (which < seconds.length) startCapture(mode, frequency, address, seconds[which]);
+                if (which < seconds.length) startCapture(mode, frequency, address, Integer.toString(seconds[which]));
                 else if (which == seconds.length) enterDuration(mode, frequency, address);
-                else startWifite(frequency, "until-stopped", address);
+                else startCapture(mode, frequency, address, "until-stopped");
             })
             .setNegativeButton("Cancel", null).show();
     }
@@ -295,17 +292,17 @@ public final class MainActivity extends Activity {
                 return;
             }
             dialog.dismiss();
-            startCapture(mode, frequency, address, seconds);
+            startCapture(mode, frequency, address, Integer.toString(seconds));
         }));
         dialog.show();
     }
 
-    private void startCapture(String mode, int frequency, String address, int seconds) {
+    private void startCapture(String mode, int frequency, String address, String duration) {
         if (mode.equals("wifite")) {
-            startWifite(frequency, Integer.toString(seconds), address);
+            startWifite(frequency, duration, address);
             return;
         }
-        String options = frequency + " " + seconds;
+        String options = frequency + " " + duration;
         if (mode.equals("wifi") && !address.isEmpty()) mode = "wifi-ap";
         String command = mode + " " + options + (address.isEmpty() ? "" : " " + address);
         action(command, "Starting Wi-Fi capture…");
@@ -332,9 +329,10 @@ public final class MainActivity extends Activity {
                 if (files.isEmpty()) picker.setMessage("No launcher captures in Downloads/NetHunter.");
                 else picker.setItems(files.toArray(new String[0]), (dialog, which) -> {
                     String file = files.get(which);
-                    if (analyzer.equals("kismet")) {
+                    if (analyzer.startsWith("kismet")) {
                         openKismetWhenReady = true;
-                        action("kismet " + file, "Starting local Kismet replay…");
+                        action("kismet " + file + (analyzer.equals("kismet-until-stopped") ? " until-stopped" : ""),
+                            "Starting local Kismet replay…");
                     } else {
                         analyzeCapture(file, analyzer);
                     }
@@ -402,8 +400,9 @@ public final class MainActivity extends Activity {
                             openKismet();
                         } else {
                             new AlertDialog.Builder(this).setTitle("Kismet · replay capture")
-                                .setMessage("Review a saved capture in your phone’s browser. The server runs on this phone for up to 15 minutes. Kismet will ask you to create a login the first time.")
-                                .setPositiveButton("Choose capture", (info, button) -> pickCapture("kismet"))
+                                .setMessage("Review a saved capture in your phone’s browser. Kismet will ask you to create a login the first time. Use Restore normal mode to close the server.")
+                                .setPositiveButton("Until stopped", (info, button) -> pickCapture("kismet-until-stopped"))
+                                .setNeutralButton("15 minutes", (info, button) -> pickCapture("kismet"))
                                 .setNegativeButton("Cancel", null).show();
                         }
                         break;

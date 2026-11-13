@@ -66,6 +66,10 @@ The OnePlus opened Wifite discovery in **Until stopped** mode and found the lab 
 
 On channel 149 (5745 MHz), the OnePlus queued seven tagged lab data frames. The independent Kali laptop received five frames containing the exact test marker. Its capture limit was five frames. Both devices returned to managed Wi-Fi. A separate channel 1 probe was queued but did not appear in the receiver capture. The channel 149 test verified raw frame injection and did not test Wifite’s individual active audit methods.
 
+## Launcher 1.8 untimed captures
+
+On the OnePlus, manual stop finalized untimed targeted beacon, lab traffic, and Airodump-ng sessions on channel 44. The saved PCAPs contained 44, 69, and 261 frames respectively. Airodump-ng also saved its CSV. Android Wi-Fi returned after each capture. Untimed Kismet replay opened its loopback listener and Restore normal mode closed it.
+
 ## Publication checks
 
 The original publication patches passed application checks against their pinned sources or matching extracted NetHunter app assets. The host radiotap suite passed 100,000 fuzz inputs and the TX admission suite passed 2,048 subtype and truncation inputs. The saved tested WLAN artifact passed its ABI and callback-layout checks, with 63 shared callbacks and zero offset mismatches. The three published image hashes matched the extracted reference files. The public AVB script reproduced the result using the recorded pre-unlock properties as an ADB fixture.
