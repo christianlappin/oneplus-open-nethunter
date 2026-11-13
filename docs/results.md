@@ -60,6 +60,12 @@ On the OnePlus, the Wireless tools menu opened a dedicated NetHunter Terminal se
 
 Both launcher modes ran on the OnePlus on channel 44. Discovery used `nhmon0` with TX disabled and found the lab AP. Active audit passed the selected lab BSSID to Wifite and enabled monitor TX on the same interface. In the active test, the driver reported seven frames queued on the station backend and eight rejected attempts at the sampled point. The test did not use an independent RF receiver. Restore normal mode ended the sessions and Android Wi-Fi reconnected.
 
+## Launcher 1.7 Wifite duration and injection retest
+
+The OnePlus opened Wifite discovery in **Until stopped** mode and found the lab AP on channel 44. A 600-second custom run also started successfully and was stopped early using Restore normal mode. Android Wi-Fi returned after stopping. A separate test ended the process owning an untimed monitor session and verified that the monitor helper restored the stock driver.
+
+On channel 149 (5745 MHz), the OnePlus queued seven tagged lab data frames. The independent Kali laptop received five frames containing the exact test marker. Its capture limit was five frames. Both devices returned to managed Wi-Fi. A separate channel 1 probe was queued but did not appear in the receiver capture. The channel 149 test verified raw frame injection and did not test Wifite’s individual active audit methods.
+
 ## Publication checks
 
 The original publication patches passed application checks against their pinned sources or matching extracted NetHunter app assets. The host radiotap suite passed 100,000 fuzz inputs and the TX admission suite passed 2,048 subtype and truncation inputs. The saved tested WLAN artifact passed its ABI and callback-layout checks, with 63 shared callbacks and zero offset mismatches. The three published image hashes matched the extracted reference files. The public AVB script reproduced the result using the recorded pre-unlock properties as an ADB fixture.

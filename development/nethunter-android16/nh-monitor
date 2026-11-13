@@ -94,14 +94,22 @@ run)
     mode=${2:-passive}
     frequency=${3:-2412}
     seconds=${4:-300}
+    owner=${5:-}
+    if [ "$seconds" = until-stopped ]; then
+        case "$owner" in ''|0*|*[!0-9]*) exit 2 ;; esac
+        owner_started=$(awk '{ print $22 }' "/proc/$owner/stat")
+        [ -n "$owner_started" ] || exit 2
+    fi
     case "$mode" in
         passive) tx=0;;
         inject) tx=2;;
         *) echo 'Mode must be passive or inject.' >&2; exit 2;;
     esac
     case "$frequency" in [245][0-9][0-9][0-9]) ;; *) exit 2;; esac
-    case "$seconds" in ''|*[!0-9]*) exit 2;; esac
-    test "$seconds" -ge 1 && test "$seconds" -le 1800 || exit 2
+    if [ "$seconds" != until-stopped ]; then
+        case "$seconds" in ''|*[!0-9]*) exit 2;; esac
+        test "$seconds" -ge 1 && test "$seconds" -le 1800 || exit 2
+    fi
     test "$(uname -r)" = "$KERNEL" || { echo 'Kernel release mismatch.' >&2; exit 1; }
     test "$(sha "$STOCK")" = "$STOCK_HASH" || exit 1
     test "$(sha "$CANDIDATE")" = "$CANDIDATE_HASH" || exit 1
@@ -136,14 +144,22 @@ run)
     echo 1 >"$PARAM/nh_monitor_refresh_rx"
     test ! -f "$STATE/stop" || exit 0
     echo "$tx" >"$PARAM/nh_monitor_tx_mode"
-    echo "nhmon0 ready at $frequency MHz in $mode mode for $seconds seconds."
-    end=$(( $(cut -d. -f1 /proc/uptime) + seconds ))
-    while test ! -f "$STATE/stop" && test "$(cut -d. -f1 /proc/uptime)" -lt "$end"; do
-        sleep 1
-    done
+    if [ "$seconds" = until-stopped ]; then
+        echo "nhmon0 ready at $frequency MHz in $mode mode until stopped."
+        while [ ! -f "$STATE/stop" ] &&
+            [ "$(awk '{ print $22 }' "/proc/$owner/stat" 2>/dev/null)" = "$owner_started" ]; do
+            sleep 1
+        done
+    else
+        echo "nhmon0 ready at $frequency MHz in $mode mode for $seconds seconds."
+        end=$(( $(cut -d. -f1 /proc/uptime) + seconds ))
+        while test ! -f "$STATE/stop" && test "$(cut -d. -f1 /proc/uptime)" -lt "$end"; do
+            sleep 1
+        done
+    fi
     ;;
 *)
-    echo 'Usage: nh-monitor {status|stop|run [passive|inject] [frequency MHz] [seconds]}'
+    echo 'Usage: nh-monitor {status|stop|run [passive|inject] [frequency MHz] [seconds|until-stopped] [owner PID]}'
     exit 2
     ;;
 esac

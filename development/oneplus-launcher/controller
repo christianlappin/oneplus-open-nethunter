@@ -69,6 +69,8 @@ cleanup() {
         elif [ "$mode" = wifite ]; then
             if [ -n "${wifite_failed:-}" ]; then
                 message 'Wifite exited with an error. Check NetHunter Terminal.'
+            elif [ "${wifite_timed_out:-0}" = 1 ]; then
+                message "Wifite reached its $duration-second limit."
             elif [ -e "$state/ready" ] || [ -e "$state/stop" ]; then
                 message 'Wifite session ended.'
             else
@@ -150,8 +152,13 @@ run_wifite_terminal() {
     fi
     case "$frequency" in [0-9][0-9][0-9][0-9]) ;; *) return 2 ;; esac
     case " $channels24 $channels5 " in *" $frequency "*) ;; *) return 2 ;; esac
-    case "$duration" in ''|0*|*[!0-9]*) return 2 ;; esac
-    [ "${#duration}" -le 3 ] && [ "$duration" -le 300 ] || return 2
+    monitor_duration=until-stopped
+    if [ "$duration" != until-stopped ]; then
+        case "$duration" in ''|0*|*[!0-9]*) return 2 ;; esac
+        [ "${#duration}" -le 4 ] && [ "$duration" -le 1770 ] ||
+            { echo 'Wifite duration must be between 1 and 1770 seconds.'; return 2; }
+        monitor_duration=$((duration + 30))
+    fi
     [ -t 0 ] && [ -t 1 ] || { echo 'Open Wifite in NetHunter Terminal.'; return 1; }
     [ ! -d "$usb_state" ] && [ ! -d /dev/.nh-open-wlan ] &&
         mkdir "$state" 2>/dev/null || { echo 'Restore normal mode before starting Wifite.'; return 1; }
@@ -165,7 +172,7 @@ run_wifite_terminal() {
     for setup_try in 1 2; do
         # Binder calls in the monitor helper require a pipe for their output.
         /system/bin/sh -c '"$@" 2>&1 | /system/bin/cat' sh \
-            "$monitor" run "$monitor_mode" "$frequency" "$((duration + 30))" >"$base/launcher.log" &
+            "$monitor" run "$monitor_mode" "$frequency" "$monitor_duration" "$$" >"$base/launcher.log" &
         launcher=$!
         if wait_for_monitor; then
             break
@@ -185,14 +192,17 @@ run_wifite_terminal() {
     else channel=$(((frequency - 5000) / 5)); fi
     touch "$state/ready"
     message "Wifite running on channel $channel in $mode_label mode."
-    printf 'Wifite · nhmon0 · channel %s · %s · up to %s seconds\n' "$channel" "$mode_label" "$duration"
+    duration_label='until stopped'
+    if [ "$duration" != until-stopped ]; then duration_label="up to $duration seconds"; fi
+    printf 'Wifite · nhmon0 · channel %s · %s · %s\n' "$channel" "$mode_label" "$duration_label"
     set -- wifite -i nhmon0 -c "$channel" --skip-crack
     if [ "$monitor_mode" = inject ]; then
         set -- "$@" --bssid "$target"
     else
         set -- "$@" --nodeauths --no-pmkid
     fi
-    "$nh" exec env --default-signal=INT,QUIT timeout --foreground -k 4 "$duration" "$@" </dev/tty &
+    if [ "$duration" != until-stopped ]; then set -- timeout --foreground -k 4 "$duration" "$@"; fi
+    "$nh" exec env --default-signal=INT,QUIT "$@" </dev/tty &
     child=$!
     while kill -0 "$child" 2>/dev/null; do
         if [ -e "$state/stop" ] || ! kill -0 "$launcher" 2>/dev/null; then
@@ -204,7 +214,8 @@ run_wifite_terminal() {
     wait "$child" || code=$?
     unset child
     case "$code" in
-        0|124|130) ;;
+        124) wifite_timed_out=1 ;;
+        0|130) ;;
         *) echo "Wifite exited with status $code."; wifite_failed=1 ;;
     esac
 }

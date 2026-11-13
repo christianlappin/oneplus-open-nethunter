@@ -254,6 +254,9 @@ public final class MainActivity extends Activity {
 
     private void pickDuration(String mode, int frequency, String address, String name) {
         String[] labels = {"15 seconds", "30 seconds", "60 seconds", "Custom duration"};
+        if (mode.equals("wifite")) {
+            labels = new String[] {"15 seconds", "30 seconds", "60 seconds", "Custom duration", "Until stopped"};
+        }
         int[] seconds = {15, 30, 60};
         String title = mode.equals("wifite") ? (address.isEmpty() ? "Wifite discovery duration" : "Wifite audit duration")
             : mode.equals("survey") ? "Airodump-ng survey duration"
@@ -262,13 +265,14 @@ public final class MainActivity extends Activity {
         new AlertDialog.Builder(this).setTitle(title)
             .setItems(labels, (dialog, which) -> {
                 if (which < seconds.length) startCapture(mode, frequency, address, seconds[which]);
-                else enterDuration(mode, frequency, address);
+                else if (which == seconds.length) enterDuration(mode, frequency, address);
+                else startWifite(frequency, "until-stopped", address);
             })
             .setNegativeButton("Cancel", null).show();
     }
 
     private void enterDuration(String mode, int frequency, String address) {
-        int maxSeconds = mode.equals("wifite") ? 300 : MAX_CAPTURE_SECONDS;
+        int maxSeconds = MAX_CAPTURE_SECONDS;
         EditText input = new EditText(this);
         input.setSingleLine();
         input.setInputType(InputType.TYPE_CLASS_NUMBER);
@@ -277,7 +281,7 @@ public final class MainActivity extends Activity {
         box.setPadding(dp(24), 0, dp(24), 0);
         box.addView(input);
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Custom duration")
-            .setMessage("Enter 1–" + maxSeconds + " seconds. Android Wi-Fi pauses during capture.")
+            .setMessage("Enter 1–" + maxSeconds + " seconds. Android Wi-Fi pauses until the session ends.")
             .setView(box).setNegativeButton("Cancel", null).setPositiveButton("Start", null).create();
         dialog.setOnShowListener(unused -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
             int seconds;
@@ -298,7 +302,7 @@ public final class MainActivity extends Activity {
 
     private void startCapture(String mode, int frequency, String address, int seconds) {
         if (mode.equals("wifite")) {
-            startWifite(frequency, seconds, address);
+            startWifite(frequency, Integer.toString(seconds), address);
             return;
         }
         String options = frequency + " " + seconds;
@@ -432,14 +436,14 @@ public final class MainActivity extends Activity {
             .setNegativeButton("Cancel", null).show();
     }
 
-    private void startWifite(int frequency, int seconds, String address) {
+    private void startWifite(int frequency, String duration, String address) {
         if (!canStartWifite()) return;
         String terminal = "com.offsec.nhterm";
         Intent intent = new Intent("neoterm.action.remote.execute");
         intent.setClassName(terminal, terminal + ".ui.term.NeoTermRemoteInterface");
         String extra = "neoterm.extra.remote.execute.";
         intent.putExtra(extra + "executable", "/data/data/com.offsec.nhterm/files/usr/bin/android-su");
-        intent.putExtra(extra + "command", CONTROLLER + " wifite-terminal " + frequency + " " + seconds
+        intent.putExtra(extra + "command", CONTROLLER + " wifite-terminal " + frequency + " " + duration
             + (address.isEmpty() ? "" : " " + address));
         intent.putExtra(extra + "session", "new");
         intent.putExtra(extra + "foreground", true);
