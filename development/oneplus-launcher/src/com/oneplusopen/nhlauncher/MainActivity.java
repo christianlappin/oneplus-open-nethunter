@@ -244,7 +244,8 @@ public final class MainActivity extends Activity {
     private void pickDuration(String mode, int frequency, String address, String name) {
         String[] labels = {"15 seconds", "30 seconds", "60 seconds", "Custom duration"};
         int[] seconds = {15, 30, 60};
-        String title = mode.equals("survey") ? "Airodump-ng survey duration"
+        String title = mode.equals("wifite") ? "Wifite discovery duration"
+            : mode.equals("survey") ? "Airodump-ng survey duration"
             : mode.equals("lab") ? "Capture " + name + " lab traffic"
             : address.isEmpty() ? "Capture duration" : "Capture " + name + " beacons";
         new AlertDialog.Builder(this).setTitle(title)
@@ -256,6 +257,7 @@ public final class MainActivity extends Activity {
     }
 
     private void enterDuration(String mode, int frequency, String address) {
+        int maxSeconds = mode.equals("wifite") ? 300 : MAX_CAPTURE_SECONDS;
         EditText input = new EditText(this);
         input.setSingleLine();
         input.setInputType(InputType.TYPE_CLASS_NUMBER);
@@ -264,7 +266,7 @@ public final class MainActivity extends Activity {
         box.setPadding(dp(24), 0, dp(24), 0);
         box.addView(input);
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Custom duration")
-            .setMessage("Enter 1–" + MAX_CAPTURE_SECONDS + " seconds. Android Wi-Fi pauses during capture.")
+            .setMessage("Enter 1–" + maxSeconds + " seconds. Android Wi-Fi pauses during capture.")
             .setView(box).setNegativeButton("Cancel", null).setPositiveButton("Start", null).create();
         dialog.setOnShowListener(unused -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
             int seconds;
@@ -273,8 +275,8 @@ public final class MainActivity extends Activity {
             } catch (NumberFormatException error) {
                 seconds = 0;
             }
-            if (seconds < 1 || seconds > MAX_CAPTURE_SECONDS) {
-                input.setError("Enter 1–" + MAX_CAPTURE_SECONDS + " seconds.");
+            if (seconds < 1 || seconds > maxSeconds) {
+                input.setError("Enter 1–" + maxSeconds + " seconds.");
                 return;
             }
             dialog.dismiss();
@@ -284,6 +286,10 @@ public final class MainActivity extends Activity {
     }
 
     private void startCapture(String mode, int frequency, String address, int seconds) {
+        if (mode.equals("wifite")) {
+            startWifite(frequency, seconds);
+            return;
+        }
         String options = frequency + " " + seconds;
         if (mode.equals("wifi") && !address.isEmpty()) mode = "wifi-ap";
         String command = mode + " " + options + (address.isEmpty() ? "" : " " + address);
@@ -352,11 +358,11 @@ public final class MainActivity extends Activity {
 
     private void showWirelessTools() {
         String[] tools = {"TShark · capture summary", "Wash · offline WPS check", "hcxtools · capture details",
-            "Aircrack-ng", "Aireplay-ng", "Wifite", "Kismet · replay capture", "Reaver", "Wireshark · KeX", "Open NetHunter Terminal"};
+            "Aircrack-ng", "Aireplay-ng", "Wifite · discovery", "Kismet · replay capture", "Reaver", "Wireshark · KeX", "Open NetHunter Terminal"};
         String[] details = {
             "Aircrack-ng is installed in Kali. It reads saved captures for credential audits. Open NetHunter Terminal and choose Kali. Captures are in /sdcard/Download/NetHunter.",
             "Aireplay-ng is installed in Kali. Use it from NetHunter Terminal with a separately prepared lab monitor session. It can transmit; the launcher capture modes are receive-only.",
-            "Wifite is installed in Kali. It needs an interactive terminal and a compatible monitor session. It can start active tests after you select a target.",
+            "",
             "",
             "Reaver is installed in Kali for active WPS testing. Use Wash to check a capture for WPS first. Reaver is kept in NetHunter Terminal for authorized lab use.",
             "Start the Kali desktop in NetHunter KeX, then open Wireshark and select a file from /sdcard/Download/NetHunter. KeX runs on this phone."
@@ -367,6 +373,14 @@ public final class MainActivity extends Activity {
                     case 0: pickCapture("summary"); break;
                     case 1: pickCapture("wash"); break;
                     case 2: pickCapture("hcx"); break;
+                    case 5:
+                        if (canStartWifite()) {
+                            new AlertDialog.Builder(this).setTitle("Wifite discovery")
+                                .setMessage("Choose a channel to open Wifite on the OnePlus monitor interface. Android Wi-Fi pauses while the radio listens. Use Restore normal mode to end the session early.")
+                                .setPositiveButton("Choose channel", (info, button) -> pickBand("wifite"))
+                                .setNegativeButton("Cancel", null).show();
+                        }
+                        break;
                     case 6:
                         if (statusText.getText().toString().startsWith("Kismet replay ready")) {
                             openKismet();
@@ -387,6 +401,33 @@ public final class MainActivity extends Activity {
                                 }).setNegativeButton("Close", null).show();
                 }
             }).setNegativeButton("Close", null).show();
+    }
+
+    private boolean canStartWifite() {
+        if (authenticated && !runningCommand && !active) return true;
+        new AlertDialog.Builder(this)
+            .setMessage("Allow launcher root access and end any current session before starting Wifite.")
+            .setPositiveButton("OK", null).show();
+        return false;
+    }
+
+    private void startWifite(int frequency, int seconds) {
+        if (!canStartWifite()) return;
+        String terminal = "com.offsec.nhterm";
+        Intent intent = new Intent("neoterm.action.remote.execute");
+        intent.setClassName(terminal, terminal + ".ui.term.NeoTermRemoteInterface");
+        String extra = "neoterm.extra.remote.execute.";
+        intent.putExtra(extra + "executable", "/data/data/com.offsec.nhterm/files/usr/bin/android-su");
+        intent.putExtra(extra + "command", CONTROLLER + " wifite-terminal " + frequency + " " + seconds);
+        intent.putExtra(extra + "session", "new");
+        intent.putExtra(extra + "foreground", true);
+        try {
+            startActivity(intent);
+        } catch (ActivityNotFoundException | SecurityException error) {
+            new AlertDialog.Builder(this)
+                .setMessage("Install or update NetHunter Terminal to open Wifite from the launcher.")
+                .setPositiveButton("OK", null).show();
+        }
     }
 
     private void openKismet() {

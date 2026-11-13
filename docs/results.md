@@ -52,6 +52,10 @@ The requested binaries were present in Kali. The verified Aireplay-ng transmit t
 
 The OnePlus analyzer processed nine synthetic beacons with known settings. It identified SAE, SAE Extended Key, WPA2/WPA3 transition, OWE, WPA2-Personal, enterprise 802.1X, and open networks. It distinguished required, optional, disabled, missing, and inconsistent PMF flags, and did not classify a vendor-specific AKM as SAE. The synthetic input used channel 44. The test validates offline decoding and does not measure 6 GHz capture or client negotiation.
 
+## Launcher 1.5 Wifite discovery
+
+On the OnePlus, the Wireless tools menu opened a dedicated NetHunter Terminal session through its Android root profile. The launcher prepared `nhmon0` in receive-only mode on channel 44. Wifite started Airodump-ng on that interface, and its live output contained the lab access point. Restore normal mode stopped Wifite and its capture process and returned Android Wi-Fi to a connected state. A separate timed session also restored Android Wi-Fi when it expired. The test stopped at discovery.
+
 ## Publication checks
 
 The original publication patches passed application checks against their pinned sources or matching extracted NetHunter app assets. The host radiotap suite passed 100,000 fuzz inputs and the TX admission suite passed 2,048 subtype and truncation inputs. The saved tested WLAN artifact passed its ABI and callback-layout checks, with 63 shared callbacks and zero offset mismatches. The three published image hashes matched the extracted reference files. The public AVB script reproduced the result using the recorded pre-unlock properties as an ADB fixture.

@@ -31,7 +31,7 @@ ap_filter() {
 cleanup() {
     trap - EXIT HUP INT TERM
     if [ -n "${child:-}" ]; then
-        if [ "$mode" = survey ]; then
+        if [ "$mode" = survey ] || [ "$mode" = wifite ]; then
             kill -INT "$child" 2>/dev/null || true
             for attempt in 1 2 3; do
                 kill -0 "$child" 2>/dev/null || break
@@ -62,6 +62,14 @@ cleanup() {
         fi
         if [ "${survey_filter_failed:-0}" = 1 ]; then
             message 'Could not scope the survey PCAP to the selected access point. See the session log.'
+        elif [ "$mode" = wifite ]; then
+            if [ -n "${wifite_failed:-}" ]; then
+                message 'Wifite exited with an error. Check NetHunter Terminal.'
+            elif [ -e "$state/ready" ] || [ -e "$state/stop" ]; then
+                message 'Wifite session ended.'
+            else
+                message 'Wifite could not prepare monitor mode. See the session log.'
+            fi
         elif [ "$mode" = scan ]; then
             if [ -n "${scan_dir:-}" ]; then rm -rf "$chroot$scan_dir"; fi
             if [ -e "$state/stop" ]; then
@@ -109,6 +117,10 @@ cleanup() {
 start_monitor() {
     "$monitor" run passive "$1" "$2" &
     launcher=$!
+    wait_for_monitor
+}
+
+wait_for_monitor() {
     for attempt in $(seq 1 20); do
         [ ! -e "$state/stop" ] && kill -0 "$launcher" 2>/dev/null || return 1
         if ip link show nhmon0 >/dev/null 2>&1 && grep -q 'nhmon0 ready' "$base/launcher.log"; then
@@ -117,6 +129,54 @@ start_monitor() {
         sleep 1
     done
     return 1
+}
+
+run_wifite_terminal() {
+    frequency=${1:-}
+    duration=${2:-}
+    case "$frequency" in [0-9][0-9][0-9][0-9]) ;; *) return 2 ;; esac
+    case " $channels24 $channels5 " in *" $frequency "*) ;; *) return 2 ;; esac
+    case "$duration" in ''|0*|*[!0-9]*) return 2 ;; esac
+    [ "${#duration}" -le 3 ] && [ "$duration" -le 300 ] || return 2
+    [ -t 0 ] && [ -t 1 ] || { echo 'Open Wifite in NetHunter Terminal.'; return 1; }
+    [ ! -d "$usb_state" ] && [ ! -d /dev/.nh-open-wlan ] &&
+        mkdir "$state" 2>/dev/null || { echo 'Restore normal mode before starting Wifite.'; return 1; }
+
+    mode=wifite
+    trap cleanup EXIT
+    trap 'exit 130' HUP INT TERM
+    printf '%s\n' "$mode" >"$state/mode"
+    message 'Preparing nhmon0 for Wifite…'
+    echo 'Preparing the OnePlus monitor interface…'
+    # Binder calls in the monitor helper require a pipe rather than a file descriptor to the log.
+    /system/bin/sh -c '"$@" 2>&1 | /system/bin/cat' sh \
+        "$monitor" run passive "$frequency" "$((duration + 30))" >"$base/launcher.log" &
+    launcher=$!
+    if ! wait_for_monitor; then
+        echo 'Could not prepare nhmon0. See View session log in the launcher.'
+        return 1
+    fi
+    if [ "$frequency" -lt 2500 ]; then channel=$(((frequency - 2407) / 5))
+    else channel=$(((frequency - 5000) / 5)); fi
+    touch "$state/ready"
+    message "Wifite running on channel $channel in receive-only mode."
+    printf 'Wifite · nhmon0 · channel %s · receive-only · up to %s seconds\n' "$channel" "$duration"
+    "$nh" exec env --default-signal=INT,QUIT timeout --foreground -k 4 "$duration" \
+        wifite -i nhmon0 -c "$channel" --nodeauths --no-pmkid --skip-crack </dev/tty &
+    child=$!
+    while kill -0 "$child" 2>/dev/null; do
+        if [ -e "$state/stop" ] || ! kill -0 "$launcher" 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+    code=0
+    wait "$child" || code=$?
+    unset child
+    case "$code" in
+        0|124|130) ;;
+        *) echo "Wifite exited with status $code."; wifite_failed=1 ;;
+    esac
 }
 
 run_wifi() {
@@ -296,6 +356,7 @@ usb_restore() {
 
 [ "$(id -u)" = 0 ] || { echo 'Magisk root is required.' >&2; exit 1; }
 case "${1:-status}" in
+    wifite-terminal) run_wifite_terminal "${2:-}" "${3:-}" ;;
     wifi|wifi-ap|lab|survey|scan|bluetooth|kismet)
         mode=$1
         access_point=
