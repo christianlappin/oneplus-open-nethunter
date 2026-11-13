@@ -48,6 +48,10 @@ Kali also loaded the Bluetooth Python dependencies under Python 3.14.7. The phon
 
 The requested binaries were present in Kali. The verified Aireplay-ng transmit test is listed above; no new transmit test or Reaver PIN audit was run as part of the launcher checks. Wifite's passive discovery result is described in the [launcher guide](launcher.md#verified-on-the-oneplus-open).
 
+## Launcher 1.4 security summary
+
+The OnePlus analyzer processed nine synthetic beacons with known settings. It identified SAE, SAE Extended Key, WPA2/WPA3 transition, OWE, WPA2-Personal, enterprise 802.1X, and open networks. It distinguished required, optional, disabled, missing, and inconsistent PMF flags, and did not classify a vendor-specific AKM as SAE. The synthetic input used channel 44. The test validates offline decoding and does not measure 6 GHz capture or client negotiation.
+
 ## Publication checks
 
 The original publication patches passed application checks against their pinned sources or matching extracted NetHunter app assets. The host radiotap suite passed 100,000 fuzz inputs and the TX admission suite passed 2,048 subtype and truncation inputs. The saved tested WLAN artifact passed its ABI and callback-layout checks, with 63 shared callbacks and zero offset mismatches. The three published image hashes matched the extracted reference files. The public AVB script reproduced the result using the recorded pre-unlock properties as an ADB fixture.
