@@ -70,6 +70,14 @@ On channel 149 (5745 MHz), the OnePlus queued seven tagged lab data frames. The 
 
 On the OnePlus, manual stop finalized untimed targeted beacon, lab traffic, and Airodump-ng sessions on channel 44. The saved PCAPs contained 44, 69, and 261 frames respectively. Airodump-ng also saved its CSV. Android Wi-Fi returned after each capture. Untimed Kismet replay opened its loopback listener and Restore normal mode closed it.
 
+## Wifite Active audit and helper cleanup
+
+The launcher opened Wifite with monitor TX enabled on channel 44 and passed the selected lab AP’s BSSID. Wifite invoked Reaver. In the retest, the station backend queued 14 frames and rejected 13 attempts by the time counters were sampled. The last reported station error was `EAGAIN`, which this backend can return when the rate limit is reached.
+
+The first run exposed live Reaver processes left behind after Wifite exited. A supervisor now adopts orphaned helpers and stops and reaps them when the session ends. An on-device test confirmed that an orphaned child was reaped. In a second run started from the launcher, Restore normal mode ended the audit, left no live Wifite, Airodump-ng, Reaver, or hcxdumptool process on the monitor interface, and restored Android Wi-Fi.
+
+The Kali laptop saw the lab AP in a managed scan, but its monitor captures on channel 44 contained zero packets, including baseline beacons. Its channel 149 control capture recorded 673 packets. The channel 44 result leaves over-the-air delivery of Wifite’s frames and the outcome of the audit unverified. The laptop returned to its original Wi-Fi connection.
+
 ## Publication checks
 
 The original publication patches passed application checks against their pinned sources or matching extracted NetHunter app assets. The host radiotap suite passed 100,000 fuzz inputs and the TX admission suite passed 2,048 subtype and truncation inputs. The saved tested WLAN artifact passed its ABI and callback-layout checks, with 63 shared callbacks and zero offset mismatches. The three published image hashes matched the extracted reference files. The public AVB script reproduced the result using the recorded pre-unlock properties as an ADB fixture.

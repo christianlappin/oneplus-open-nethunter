@@ -160,6 +160,8 @@ run_wifite_terminal() {
         monitor_duration=$((duration + 30))
     fi
     [ -t 0 ] && [ -t 1 ] || { echo 'Open Wifite in NetHunter Terminal.'; return 1; }
+    [ -r "$base/nh-wifite-session.py" ] ||
+        { echo 'Install the Wifite session helper first.'; return 1; }
     [ ! -d "$usb_state" ] && [ ! -d /dev/.nh-open-wlan ] &&
         mkdir "$state" 2>/dev/null || { echo 'Restore normal mode before starting Wifite.'; return 1; }
 
@@ -201,8 +203,8 @@ run_wifite_terminal() {
     else
         set -- "$@" --nodeauths --no-pmkid
     fi
-    if [ "$duration" != until-stopped ]; then set -- timeout --foreground -k 4 "$duration" "$@"; fi
-    "$nh" exec env --default-signal=INT,QUIT "$@" </dev/tty &
+    "$nh" exec env --default-signal=INT,QUIT python3 -c "$(cat "$base/nh-wifite-session.py")" \
+        "$duration" "$@" </dev/tty &
     child=$!
     while kill -0 "$child" 2>/dev/null; do
         if [ -e "$state/stop" ] || ! kill -0 "$launcher" 2>/dev/null; then
