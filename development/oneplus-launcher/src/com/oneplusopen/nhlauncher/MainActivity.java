@@ -56,6 +56,7 @@ public final class MainActivity extends Activity {
     private Button survey;
     private Button analyze;
     private boolean showScanWhenReady;
+    private boolean scanForWifite;
     private boolean openKismetWhenReady;
     private Button bluetooth;
     private Button restore;
@@ -176,18 +177,23 @@ public final class MainActivity extends Activity {
     }
 
     private void pickScanBand() {
+        pickScanBand(false);
+    }
+
+    private void pickScanBand(boolean forWifite) {
         String[] bands = {"Both bands", "2.4 GHz only", "5 GHz only"};
         String[] arguments = {"all", "24", "5"};
         new AlertDialog.Builder(this).setTitle("Scan channels")
             .setItems(bands, (dialog, which) -> {
+                scanForWifite = forWifite;
                 showScanWhenReady = true;
                 action("scan " + arguments[which], "Starting passive scan…");
             })
-            .setNeutralButton("Last results", (dialog, which) -> showScanResults())
+            .setNeutralButton("Last results", (dialog, which) -> showScanResults(forWifite))
             .setNegativeButton("Cancel", null).show();
     }
 
-    private void showScanResults() {
+    private void showScanResults(boolean forWifite) {
         commands.execute(() -> {
             Result result = run("scan-results");
             List<Integer> frequencies = new ArrayList<>();
@@ -215,8 +221,13 @@ public final class MainActivity extends Activity {
                         ? "No beacons were heard during the scan."
                         : "Run a channel scan first.");
                 } else {
-                    dialog.setItems(labels.toArray(new String[0]), (unused, which) ->
-                        pickAccessPointAction(frequencies.get(which), addresses.get(which), names.get(which)));
+                    dialog.setItems(labels.toArray(new String[0]), (unused, which) -> {
+                        int frequency = frequencies.get(which);
+                        String address = addresses.get(which);
+                        String name = names.get(which);
+                        if (forWifite) confirmWifiteAudit(frequency, address, name);
+                        else pickAccessPointAction(frequency, address, name);
+                    });
                 }
                 dialog.show();
             });
@@ -244,7 +255,7 @@ public final class MainActivity extends Activity {
     private void pickDuration(String mode, int frequency, String address, String name) {
         String[] labels = {"15 seconds", "30 seconds", "60 seconds", "Custom duration"};
         int[] seconds = {15, 30, 60};
-        String title = mode.equals("wifite") ? "Wifite discovery duration"
+        String title = mode.equals("wifite") ? (address.isEmpty() ? "Wifite discovery duration" : "Wifite audit duration")
             : mode.equals("survey") ? "Airodump-ng survey duration"
             : mode.equals("lab") ? "Capture " + name + " lab traffic"
             : address.isEmpty() ? "Capture duration" : "Capture " + name + " beacons";
@@ -287,7 +298,7 @@ public final class MainActivity extends Activity {
 
     private void startCapture(String mode, int frequency, String address, int seconds) {
         if (mode.equals("wifite")) {
-            startWifite(frequency, seconds);
+            startWifite(frequency, seconds, address);
             return;
         }
         String options = frequency + " " + seconds;
@@ -358,7 +369,7 @@ public final class MainActivity extends Activity {
 
     private void showWirelessTools() {
         String[] tools = {"TShark · capture summary", "Wash · offline WPS check", "hcxtools · capture details",
-            "Aircrack-ng", "Aireplay-ng", "Wifite · discovery", "Kismet · replay capture", "Reaver", "Wireshark · KeX", "Open NetHunter Terminal"};
+            "Aircrack-ng", "Aireplay-ng", "Wifite", "Kismet · replay capture", "Reaver", "Wireshark · KeX", "Open NetHunter Terminal"};
         String[] details = {
             "Aircrack-ng is installed in Kali. It reads saved captures for credential audits. Open NetHunter Terminal and choose Kali. Captures are in /sdcard/Download/NetHunter.",
             "Aireplay-ng is installed in Kali. Use it from NetHunter Terminal with a separately prepared lab monitor session. It can transmit; the launcher capture modes are receive-only.",
@@ -375,9 +386,10 @@ public final class MainActivity extends Activity {
                     case 2: pickCapture("hcx"); break;
                     case 5:
                         if (canStartWifite()) {
-                            new AlertDialog.Builder(this).setTitle("Wifite discovery")
-                                .setMessage("Choose a channel to open Wifite on the OnePlus monitor interface. Android Wi-Fi pauses while the radio listens. Use Restore normal mode to end the session early.")
+                            new AlertDialog.Builder(this).setTitle("Wifite")
+                                .setMessage("Discovery listens on a channel. Active audit listens and transmits on a selected access point. Android Wi-Fi pauses during either session.")
                                 .setPositiveButton("Choose channel", (info, button) -> pickBand("wifite"))
+                                .setNeutralButton("Active audit", (info, button) -> pickScanBand(true))
                                 .setNegativeButton("Cancel", null).show();
                         }
                         break;
@@ -411,14 +423,24 @@ public final class MainActivity extends Activity {
         return false;
     }
 
-    private void startWifite(int frequency, int seconds) {
+    private void confirmWifiteAudit(int frequency, String address, String name) {
+        new AlertDialog.Builder(this).setTitle("Active Wifite audit")
+            .setMessage(name + "\n" + channelLabel(frequency) + " · " + address
+                + "\n\nWifite can transmit as soon as it finds this access point and may disconnect clients. Continue only for a network you’re authorized to test.")
+            .setPositiveButton("Choose duration", (dialog, which) ->
+                pickDuration("wifite", frequency, address, name))
+            .setNegativeButton("Cancel", null).show();
+    }
+
+    private void startWifite(int frequency, int seconds, String address) {
         if (!canStartWifite()) return;
         String terminal = "com.offsec.nhterm";
         Intent intent = new Intent("neoterm.action.remote.execute");
         intent.setClassName(terminal, terminal + ".ui.term.NeoTermRemoteInterface");
         String extra = "neoterm.extra.remote.execute.";
         intent.putExtra(extra + "executable", "/data/data/com.offsec.nhterm/files/usr/bin/android-su");
-        intent.putExtra(extra + "command", CONTROLLER + " wifite-terminal " + frequency + " " + seconds);
+        intent.putExtra(extra + "command", CONTROLLER + " wifite-terminal " + frequency + " " + seconds
+            + (address.isEmpty() ? "" : " " + address));
         intent.putExtra(extra + "session", "new");
         intent.putExtra(extra + "foreground", true);
         try {
@@ -600,7 +622,7 @@ public final class MainActivity extends Activity {
                     }
                     if (showScanWhenReady && !active) {
                         showScanWhenReady = false;
-                        if (message.startsWith("Channel scan complete")) showScanResults();
+                        if (message.startsWith("Channel scan complete")) showScanResults(scanForWifite);
                     }
                 } else {
                     statusTitle.setText("Root access needed");

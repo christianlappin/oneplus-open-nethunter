@@ -56,6 +56,10 @@ The OnePlus analyzer processed nine synthetic beacons with known settings. It id
 
 On the OnePlus, the Wireless tools menu opened a dedicated NetHunter Terminal session through its Android root profile. The launcher prepared `nhmon0` in receive-only mode on channel 44. Wifite started Airodump-ng on that interface, and its live output contained the lab access point. Restore normal mode stopped Wifite and its capture process and returned Android Wi-Fi to a connected state. A separate timed session also restored Android Wi-Fi when it expired. The test stopped at discovery.
 
+## Launcher 1.6 Wifite modes
+
+Both launcher modes ran on the OnePlus on channel 44. Discovery used `nhmon0` with TX disabled and found the lab AP. Active audit passed the selected lab BSSID to Wifite and enabled monitor TX on the same interface. In the active test, the driver reported seven frames queued on the station backend and eight rejected attempts at the sampled point. The test did not use an independent RF receiver. Restore normal mode ended the sessions and Android Wi-Fi reconnected.
+
 ## Publication checks
 
 The original publication patches passed application checks against their pinned sources or matching extracted NetHunter app assets. The host radiotap suite passed 100,000 fuzz inputs and the TX admission suite passed 2,048 subtype and truncation inputs. The saved tested WLAN artifact passed its ABI and callback-layout checks, with 63 shared callbacks and zero offset mismatches. The three published image hashes matched the extracted reference files. The public AVB script reproduced the result using the recorded pre-unlock properties as an ADB fixture.

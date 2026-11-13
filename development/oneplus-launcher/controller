@@ -30,6 +30,10 @@ ap_filter() {
 
 cleanup() {
     trap - EXIT HUP INT TERM
+    if [ "$mode" = wifite ] && [ "${monitor_mode:-}" = inject ] && [ -e "$state/ready" ]; then
+        # Disable transmission before waiting for Wifite to stop its tools.
+        echo 0 >"$monitor_parameters/nh_monitor_tx_mode" || true
+    fi
     if [ -n "${child:-}" ]; then
         if [ "$mode" = survey ] || [ "$mode" = wifite ]; then
             kill -INT "$child" 2>/dev/null || true
@@ -134,6 +138,16 @@ wait_for_monitor() {
 run_wifite_terminal() {
     frequency=${1:-}
     duration=${2:-}
+    target=${3:-}
+    monitor_mode=passive
+    mode_label=receive-only
+    if [ -n "$target" ]; then
+        [ "${#target}" -eq 17 ] &&
+            printf '%s\n' "$target" | grep -Eq '^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$' ||
+            { echo 'Invalid access-point address.'; return 2; }
+        monitor_mode=inject
+        mode_label=injection-enabled
+    fi
     case "$frequency" in [0-9][0-9][0-9][0-9]) ;; *) return 2 ;; esac
     case " $channels24 $channels5 " in *" $frequency "*) ;; *) return 2 ;; esac
     case "$duration" in ''|0*|*[!0-9]*) return 2 ;; esac
@@ -148,21 +162,37 @@ run_wifite_terminal() {
     printf '%s\n' "$mode" >"$state/mode"
     message 'Preparing nhmon0 for Wifite…'
     echo 'Preparing the OnePlus monitor interface…'
-    # Binder calls in the monitor helper require a pipe rather than a file descriptor to the log.
-    /system/bin/sh -c '"$@" 2>&1 | /system/bin/cat' sh \
-        "$monitor" run passive "$frequency" "$((duration + 30))" >"$base/launcher.log" &
-    launcher=$!
-    if ! wait_for_monitor; then
-        echo 'Could not prepare nhmon0. See View session log in the launcher.'
-        return 1
-    fi
+    for setup_try in 1 2; do
+        # Binder calls in the monitor helper require a pipe for their output.
+        /system/bin/sh -c '"$@" 2>&1 | /system/bin/cat' sh \
+            "$monitor" run "$monitor_mode" "$frequency" "$((duration + 30))" >"$base/launcher.log" &
+        launcher=$!
+        if wait_for_monitor; then
+            break
+        fi
+        "$monitor" stop || true
+        wait "$launcher" || true
+        if [ "$setup_try" -eq 2 ] || [ -e "$state/stop" ] || [ -d /dev/.nh-open-wlan ] ||
+            ! grep -q 'Device or resource busy' "$base/launcher.log"; then
+            echo 'Could not prepare nhmon0. See View session log in the launcher.'
+            return 1
+        fi
+        echo 'The radio was busy. Retrying monitor setup…'
+        sleep 2
+        [ ! -e "$state/stop" ] || return 0
+    done
     if [ "$frequency" -lt 2500 ]; then channel=$(((frequency - 2407) / 5))
     else channel=$(((frequency - 5000) / 5)); fi
     touch "$state/ready"
-    message "Wifite running on channel $channel in receive-only mode."
-    printf 'Wifite · nhmon0 · channel %s · receive-only · up to %s seconds\n' "$channel" "$duration"
-    "$nh" exec env --default-signal=INT,QUIT timeout --foreground -k 4 "$duration" \
-        wifite -i nhmon0 -c "$channel" --nodeauths --no-pmkid --skip-crack </dev/tty &
+    message "Wifite running on channel $channel in $mode_label mode."
+    printf 'Wifite · nhmon0 · channel %s · %s · up to %s seconds\n' "$channel" "$mode_label" "$duration"
+    set -- wifite -i nhmon0 -c "$channel" --skip-crack
+    if [ "$monitor_mode" = inject ]; then
+        set -- "$@" --bssid "$target"
+    else
+        set -- "$@" --nodeauths --no-pmkid
+    fi
+    "$nh" exec env --default-signal=INT,QUIT timeout --foreground -k 4 "$duration" "$@" </dev/tty &
     child=$!
     while kill -0 "$child" 2>/dev/null; do
         if [ -e "$state/stop" ] || ! kill -0 "$launcher" 2>/dev/null; then
@@ -356,7 +386,7 @@ usb_restore() {
 
 [ "$(id -u)" = 0 ] || { echo 'Magisk root is required.' >&2; exit 1; }
 case "${1:-status}" in
-    wifite-terminal) run_wifite_terminal "${2:-}" "${3:-}" ;;
+    wifite-terminal) run_wifite_terminal "${2:-}" "${3:-}" "${4:-}" ;;
     wifi|wifi-ap|lab|survey|scan|bluetooth|kismet)
         mode=$1
         access_point=
