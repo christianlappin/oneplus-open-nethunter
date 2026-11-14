@@ -34,10 +34,14 @@ cleanup() {
         ip link set "$alfa_iface" down 2>/dev/null || true
     fi
     if [ -n "${child:-}" ]; then
-        if [ "$mode" = survey ] || [ "$mode" = wifite ]; then
-            stop_signal=INT
-            if [ "$mode" = wifite ] && [ -z "${alfa_iface:-}" ]; then stop_signal=TERM; fi
-            kill -"$stop_signal" "$child" 2>/dev/null || true
+        if [ "$mode" = wifite ]; then
+            kill -TERM "$child" 2>/dev/null || true
+            for attempt in 1 2 3 4 5 6 7; do
+                kill -0 "$child" 2>/dev/null || break
+                sleep 1
+            done
+        elif [ "$mode" = survey ]; then
+            kill -INT "$child" 2>/dev/null || true
             for attempt in 1 2 3; do
                 kill -0 "$child" 2>/dev/null || break
                 sleep 1
@@ -280,6 +284,8 @@ run_wifite_terminal() {
     else
         set -- --discovery "$@" --nodeauths --no-pmkid
     fi
+    # The supervisor and Wifite handle terminal interrupts after setup.
+    trap ':' INT
     exec 3<&0
     "$nh" exec env --default-signal=INT,QUIT python3 -c "$(cat "$base/nh-wifite-session.py")" \
         "$duration" "$@" <&3 3<&- &

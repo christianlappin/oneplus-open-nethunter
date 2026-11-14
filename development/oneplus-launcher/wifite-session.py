@@ -26,18 +26,13 @@ def children():
     return result
 
 
-def signal_children(sig):
-    for pid in children():
-        try:
-            os.kill(pid, sig)
-        except ProcessLookupError:
-            pass
-
-
-def stop_children(process):
+def stop_children(process, terminal_interrupt=False):
     # Keep polling the direct children as descendants are reparented to us.
     # Reap Wifite through Popen so its exit status stays available.
-    for sig, grace in ((signal.SIGINT, 0.6), (signal.SIGTERM, 0.4), (signal.SIGKILL, 0.6)):
+    # Wifite treats a second SIGINT during cleanup as an emergency exit.
+    # Let its two cleanup joins finish before escalating.
+    for sig, grace in ((signal.SIGINT, 5.5), (signal.SIGTERM, 0.4), (signal.SIGKILL, 0.6)):
+        signaled = {process.pid} if terminal_interrupt and sig == signal.SIGINT else set()
         end = time.monotonic() + grace
         while time.monotonic() < end:
             process.poll()
@@ -47,9 +42,15 @@ def stop_children(process):
                         os.waitpid(pid, os.WNOHANG)
                     except ChildProcessError:
                         pass
-            if not children():
+            live = set(children())
+            if not live:
                 return
-            signal_children(sig)
+            for pid in live - signaled:
+                try:
+                    os.kill(pid, sig)
+                except ProcessLookupError:
+                    pass
+            signaled.update(live)
             time.sleep(0.05)
 
 
@@ -183,12 +184,16 @@ def main():
     command = sys.argv[2:]
     discovery = command[0] == "--discovery"
     stopped = False
+    terminal_interrupt = False
 
     def request_stop(sig, _frame):
-        nonlocal stopped
+        nonlocal stopped, terminal_interrupt
         # Wifite uses the terminal's SIGINT to advance to its numbered picker.
-        if sig != signal.SIGINT or not discovery:
-            stopped = True
+        if sig == signal.SIGINT:
+            if discovery:
+                return
+            terminal_interrupt = True
+        stopped = True
 
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, request_stop)
@@ -211,7 +216,7 @@ def main():
             time.sleep(0.1)
         return 130
     finally:
-        stop_children(process)
+        stop_children(process, terminal_interrupt)
 
 
 if __name__ == "__main__":
