@@ -35,7 +35,9 @@ cleanup() {
     fi
     if [ -n "${child:-}" ]; then
         if [ "$mode" = survey ] || [ "$mode" = wifite ]; then
-            kill -INT "$child" 2>/dev/null || true
+            stop_signal=INT
+            if [ "$mode" = wifite ] && [ -z "${alfa_iface:-}" ]; then stop_signal=TERM; fi
+            kill -"$stop_signal" "$child" 2>/dev/null || true
             for attempt in 1 2 3; do
                 kill -0 "$child" 2>/dev/null || break
                 sleep 1
@@ -240,9 +242,12 @@ run_wifite_terminal() {
     else
         message 'Preparing nhmon0 for Wifite…'
         echo 'Preparing the OnePlus monitor interface…'
+        # Keep the monitor helper outside the terminal's Ctrl+C process group.
+        # The controller still stops it and waits for restoration on exit.
+        trap ':' INT
         for setup_try in 1 2; do
             # Binder calls in the monitor helper require a pipe for their output.
-            /system/bin/sh -c '"$@" 2>&1 | /system/bin/cat' sh \
+            setsid /system/bin/sh -c '"$@" 2>&1 | /system/bin/cat' sh \
                 "$monitor" run "$monitor_mode" "$frequency" "$monitor_duration" "$$" >"$base/launcher.log" &
             launcher=$!
             if wait_for_monitor; then
@@ -273,7 +278,7 @@ run_wifite_terminal() {
         set -- --client "$(printf '%s' "$client" | tr A-F a-f)" "$@" --bssid "$target" --wpa --no-wps --no-pmkid --new-hs --wpadt 5 \
             --hs-dir "$downloads/Wifite"
     else
-        set -- "$@" --nodeauths --no-pmkid
+        set -- --discovery "$@" --nodeauths --no-pmkid
     fi
     exec 3<&0
     "$nh" exec env --default-signal=INT,QUIT python3 -c "$(cat "$base/nh-wifite-session.py")" \

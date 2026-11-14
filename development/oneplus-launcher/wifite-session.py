@@ -152,28 +152,54 @@ def directed_wifite(client, args):
     return wifite.main()
 
 
+def discovery_wifite(args):
+    from wifite import wifite
+    from wifite.config import Configuration
+
+    sys.argv = ["wifite", *args]
+    Configuration.initialize(load_interface=False)
+    from wifite.util.scanner import Scanner
+
+    select_targets = Scanner.select_targets
+
+    def select_discovered_targets(scanner):
+        if scanner.target is None and not scanner.targets:
+            print("\nNo access points found on this channel. Try another channel or let the scan run longer.",
+                  flush=True)
+            return []
+        return select_targets(scanner)
+
+    Scanner.select_targets = select_discovered_targets
+    return wifite.main()
+
+
 def main():
     # Linux reparents orphaned helpers to this supervisor instead of PID 1.
     if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
         raise OSError(ctypes.get_errno(), "Could not supervise Wifite child processes")
 
+    duration = sys.argv[1]
+    deadline = None if duration == "until-stopped" else time.monotonic() + int(duration)
+    command = sys.argv[2:]
+    discovery = command[0] == "--discovery"
     stopped = False
 
-    def request_stop(_sig, _frame):
+    def request_stop(sig, _frame):
         nonlocal stopped
-        stopped = True
+        # Wifite uses the terminal's SIGINT to advance to its numbered picker.
+        if sig != signal.SIGINT or not discovery:
+            stopped = True
 
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, request_stop)
 
-    duration = sys.argv[1]
-    deadline = None if duration == "until-stopped" else time.monotonic() + int(duration)
-    command = sys.argv[2:]
-    if command[0] == "--client":
-        client, tool, *args = command[1:]
-        if tool != "wifite":
-            raise ValueError("Directed audit requires Wifite")
-        command = [sys.executable, "-c", sys.orig_argv[sys.orig_argv.index("-c") + 1], "--directed-worker", client, *args]
+    if discovery or command[0] == "--client":
+        source = sys.orig_argv[sys.orig_argv.index("-c") + 1]
+        tool_index = 1 if discovery else 2
+        if command[tool_index] != "wifite":
+            raise ValueError("This launcher mode requires Wifite")
+        worker = ["--discovery-worker"] if discovery else ["--directed-worker", command[1]]
+        command = [sys.executable, "-c", source, *worker, *command[tool_index + 1:]]
     process = subprocess.Popen(command)
     try:
         while not stopped:
@@ -191,4 +217,6 @@ def main():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--directed-worker":
         sys.exit(directed_wifite(sys.argv[2], sys.argv[3:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "--discovery-worker":
+        sys.exit(discovery_wifite(sys.argv[2:]))
     sys.exit(main())
