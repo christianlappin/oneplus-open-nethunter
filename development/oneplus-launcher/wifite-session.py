@@ -168,7 +168,13 @@ def discovery_wifite(args):
             print("\nNo access points found on this channel. Try another channel or let the scan run longer.",
                   flush=True)
             return []
-        return select_targets(scanner)
+        # NetHunter Terminal can deliver another Ctrl+C as input starts.
+        # Keep the picker available and let launcher Stop terminate the session.
+        previous_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            return select_targets(scanner)
+        finally:
+            signal.signal(signal.SIGINT, previous_handler)
 
     Scanner.select_targets = select_discovered_targets
     return wifite.main()
