@@ -300,13 +300,18 @@ run_wifite_terminal() {
         elif ! kill -0 "$launcher" 2>/dev/null; then
             return 0
         fi
-        sleep 1
+        # Ctrl+C also interrupts sleep in this terminal's process group.
+        # Keep supervising Wifite while it opens the numbered picker.
+        sleep 1 || true
     done
     code=0
     wait "$child" || code=$?
     unset child
     case "$code" in
-        124) wifite_timed_out=1 ;;
+        124)
+            wifite_timed_out=1
+            printf '\nWifite reached its %s-second limit.\n' "$duration"
+            ;;
         0|130) ;;
         *) echo "Wifite exited with status $code."; wifite_failed=1 ;;
     esac
