@@ -56,7 +56,6 @@ public final class MainActivity extends Activity {
     private Button survey;
     private Button analyze;
     private boolean showScanWhenReady;
-    private boolean scanForWifite;
     private boolean openKismetWhenReady;
     private Button bluetooth;
     private Button restore;
@@ -177,25 +176,20 @@ public final class MainActivity extends Activity {
     }
 
     private void pickScanBand() {
-        pickScanBand(false);
-    }
-
-    private void pickScanBand(boolean forWifite) {
         String[] bands = {"Both bands", "2.4 GHz only", "5 GHz only"};
         String[] arguments = {"all", "24", "5"};
         new AlertDialog.Builder(this).setTitle("Scan channels")
             .setItems(bands, (dialog, which) -> {
-                scanForWifite = forWifite;
                 showScanWhenReady = true;
                 action("scan " + arguments[which], "Starting passive scan…");
             })
-            .setNeutralButton("Last results", (dialog, which) -> showScanResults(forWifite))
+            .setNeutralButton("Last results", (dialog, which) -> showScanResults(false))
             .setNegativeButton("Cancel", null).show();
     }
 
     private void showScanResults(boolean forWifite) {
         commands.execute(() -> {
-            Result result = run("scan-results");
+            Result result = run(forWifite ? "wifite-access-points" : "scan-results");
             List<Integer> frequencies = new ArrayList<>();
             List<String> addresses = new ArrayList<>();
             List<String> names = new ArrayList<>();
@@ -218,8 +212,9 @@ public final class MainActivity extends Activity {
                     .setTitle("Networks found").setNegativeButton("Close", null);
                 if (labels.isEmpty()) {
                     dialog.setMessage(result.code == 0
-                        ? "No beacons were heard during the scan."
-                        : "Run a channel scan first.");
+                        ? (forWifite ? "No access points in Android’s scan cache. Refresh the network list in Android Wi-Fi settings and try again."
+                            : "No beacons were heard during the scan.")
+                        : "Could not read scan results.");
                 } else {
                     dialog.setItems(labels.toArray(new String[0]), (unused, which) -> {
                         int frequency = frequencies.get(which);
@@ -253,6 +248,10 @@ public final class MainActivity extends Activity {
     }
 
     private void pickDuration(String mode, int frequency, String address, String name) {
+        pickDuration(mode, frequency, address, name, "");
+    }
+
+    private void pickDuration(String mode, int frequency, String address, String name, String client) {
         String[] labels = {"15 seconds", "30 seconds", "60 seconds", "Custom duration", "Until stopped"};
         int[] seconds = {15, 30, 60};
         String title = mode.equals("wifite") ? (address.isEmpty() ? "Wifite discovery duration" : "Wifite audit duration")
@@ -261,14 +260,14 @@ public final class MainActivity extends Activity {
             : address.isEmpty() ? "Capture duration" : "Capture " + name + " beacons";
         new AlertDialog.Builder(this).setTitle(title)
             .setItems(labels, (dialog, which) -> {
-                if (which < seconds.length) startCapture(mode, frequency, address, Integer.toString(seconds[which]));
-                else if (which == seconds.length) enterDuration(mode, frequency, address);
-                else startCapture(mode, frequency, address, "until-stopped");
+                if (which < seconds.length) startCapture(mode, frequency, address, Integer.toString(seconds[which]), client);
+                else if (which == seconds.length) enterDuration(mode, frequency, address, client);
+                else startCapture(mode, frequency, address, "until-stopped", client);
             })
             .setNegativeButton("Cancel", null).show();
     }
 
-    private void enterDuration(String mode, int frequency, String address) {
+    private void enterDuration(String mode, int frequency, String address, String client) {
         int maxSeconds = MAX_CAPTURE_SECONDS;
         EditText input = new EditText(this);
         input.setSingleLine();
@@ -278,7 +277,7 @@ public final class MainActivity extends Activity {
         box.setPadding(dp(24), 0, dp(24), 0);
         box.addView(input);
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Custom duration")
-            .setMessage("Enter 1–" + maxSeconds + " seconds. Android Wi-Fi pauses until the session ends.")
+            .setMessage("Enter 1–" + maxSeconds + " seconds." + (client.isEmpty() ? " Android Wi-Fi pauses until the session ends." : ""))
             .setView(box).setNegativeButton("Cancel", null).setPositiveButton("Start", null).create();
         dialog.setOnShowListener(unused -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
             int seconds;
@@ -292,14 +291,14 @@ public final class MainActivity extends Activity {
                 return;
             }
             dialog.dismiss();
-            startCapture(mode, frequency, address, Integer.toString(seconds));
+            startCapture(mode, frequency, address, Integer.toString(seconds), client);
         }));
         dialog.show();
     }
 
-    private void startCapture(String mode, int frequency, String address, String duration) {
+    private void startCapture(String mode, int frequency, String address, String duration, String client) {
         if (mode.equals("wifite")) {
-            startWifite(frequency, duration, address);
+            startWifite(frequency, duration, address, client);
             return;
         }
         String options = frequency + " " + duration;
@@ -389,9 +388,9 @@ public final class MainActivity extends Activity {
                     case 5:
                         if (canStartWifite()) {
                             new AlertDialog.Builder(this).setTitle("Wifite")
-                                .setMessage("Discovery listens on a channel. Active audit listens and transmits on a selected access point. Android Wi-Fi pauses during either session.")
+                                .setMessage("Discovery pauses Android Wi-Fi to listen on the internal radio. Active audit uses the USB ALFA AWUS036ACS and keeps Android Wi-Fi connected.")
                                 .setPositiveButton("Choose channel", (info, button) -> pickBand("wifite"))
-                                .setNeutralButton("Active audit", (info, button) -> pickScanBand(true))
+                                .setNeutralButton("Active audit", (info, button) -> showScanResults(true))
                                 .setNegativeButton("Cancel", null).show();
                         }
                         break;
@@ -427,15 +426,33 @@ public final class MainActivity extends Activity {
     }
 
     private void confirmWifiteAudit(int frequency, String address, String name) {
-        new AlertDialog.Builder(this).setTitle("Active Wifite audit")
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        input.setHint("Test device Wi-Fi MAC address");
+        LinearLayout box = column();
+        box.setPadding(dp(24), 0, dp(24), 0);
+        box.addView(input);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Active Wifite audit")
             .setMessage(name + "\n" + channelLabel(frequency) + " · " + address
-                + "\n\nWifite can transmit as soon as it finds this access point and may disconnect clients. Continue only for a network you’re authorized to test.")
-            .setPositiveButton("Choose duration", (dialog, which) ->
-                pickDuration("wifite", frequency, address, name))
-            .setNegativeButton("Cancel", null).show();
+                + "\n\nConnect the ALFA. Use the MAC shown in the test device’s details for this network. "
+                + "Continuing may briefly disconnect that device.")
+            .setView(box).setPositiveButton("Choose duration", null)
+            .setNegativeButton("Cancel", null).create();
+        dialog.setOnShowListener(unused -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            String client = input.getText().toString().trim().toLowerCase(Locale.ROOT);
+            if (!client.matches("[0-9a-f][02468ace](:[0-9a-f]{2}){5}")
+                || client.equals("00:00:00:00:00:00") || client.equalsIgnoreCase(address)) {
+                input.setError("Enter the test device’s Wi-Fi MAC address.");
+                return;
+            }
+            dialog.dismiss();
+            pickDuration("wifite", frequency, address, name, client);
+        }));
+        dialog.show();
     }
 
-    private void startWifite(int frequency, String duration, String address) {
+    private void startWifite(int frequency, String duration, String address, String client) {
         if (!canStartWifite()) return;
         String terminal = "com.offsec.nhterm";
         Intent intent = new Intent("neoterm.action.remote.execute");
@@ -443,7 +460,7 @@ public final class MainActivity extends Activity {
         String extra = "neoterm.extra.remote.execute.";
         intent.putExtra(extra + "executable", "/data/data/com.offsec.nhterm/files/usr/bin/android-su");
         intent.putExtra(extra + "command", CONTROLLER + " wifite-terminal " + frequency + " " + duration
-            + (address.isEmpty() ? "" : " " + address));
+            + (address.isEmpty() ? "" : " " + address + " " + client));
         intent.putExtra(extra + "session", "new");
         intent.putExtra(extra + "foreground", true);
         try {
@@ -625,7 +642,7 @@ public final class MainActivity extends Activity {
                     }
                     if (showScanWhenReady && !active) {
                         showScanWhenReady = false;
-                        if (message.startsWith("Channel scan complete")) showScanResults(scanForWifite);
+                        if (message.startsWith("Channel scan complete")) showScanResults(false);
                     }
                 } else {
                     statusTitle.setText("Root access needed");

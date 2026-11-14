@@ -4,6 +4,8 @@ import ctypes
 import os
 from pathlib import Path
 import signal
+import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -51,6 +53,105 @@ def stop_children(process):
             time.sleep(0.05)
 
 
+def snapshot_pcap(source, destination):
+    """Copy complete records from the live classic PCAP Wifite just snapshotted."""
+    with source.open("rb") as reader, destination.open("wb") as writer:
+        header = reader.read(24)
+        order = {b"\xd4\xc3\xb2\xa1": "<", b"\xa1\xb2\xc3\xd4": ">",
+                 b"\x4d\x3c\xb2\xa1": "<", b"\xa1\xb2\x3c\x4d": ">"}
+        if len(header) != 24 or header[:4] not in order:
+            return False
+        endian = order[header[:4]]
+        snaplen = struct.unpack_from(endian + "I", header, 16)[0]
+        writer.write(header)
+        while record := reader.read(16):
+            if len(record) != 16:
+                break
+            size = struct.unpack_from(endian + "I", record, 8)[0]
+            if size > min(snaplen, 262144):
+                return False
+            payload = reader.read(size)
+            if len(payload) != size:
+                break
+            writer.write(record)
+            writer.write(payload)
+    return True
+
+
+def select_handshake(capfile, bssid, client):
+    source = Path(capfile)
+    clean = source.with_name(source.name + ".clean")
+    scoped = source.with_name(source.name + ".scoped")
+    match = (f"((wlan.sa == {bssid} && wlan.da == {client}) || "
+             f"(wlan.sa == {client} && wlan.da == {bssid})) && wlan.bssid == {bssid}")
+    frames = f"({match} && eapol) || (wlan.bssid == {bssid} && wlan.fc.type_subtype == 0x08)"
+    try:
+        if not snapshot_pcap(source, clean):
+            return False
+        tshark = ["tshark", "-n", "-r", str(clean)]
+        result = subprocess.run(tshark + [
+            "-Y", f"{match} && eapol", "-T", "fields",
+            "-e", "wlan_rsna_eapol.keydes.msgnr", "-e", "eapol.keydes.replay_counter",
+        ], capture_output=True, text=True, timeout=8, check=True)
+        expected = 1
+        replay = None
+        for line in result.stdout.splitlines():
+            fields = line.split("\t")
+            if len(fields) != 2 or not fields[1].isdecimal():
+                continue
+            number, counter = fields
+            counter = int(counter)
+            if number == "1":
+                expected, replay = 2, counter
+            elif number == str(expected) and (counter > replay if expected == 3 else counter == replay):
+                expected += 1
+                replay = counter
+                if expected == 5:
+                    break
+        if expected != 5:
+            return False
+        subprocess.run(tshark + ["-Y", frames, "-F", "pcap", "-w", str(scoped)],
+                       capture_output=True, timeout=8, check=True)
+        scoped.replace(source)
+        return True
+    finally:
+        clean.unlink(missing_ok=True)
+        scoped.unlink(missing_ok=True)
+
+
+def directed_wifite(client, args):
+    # Wifite normally sends a broadcast burst as well as client-specific
+    # bursts. Override only the WPA deauth step in this process.
+    from wifite import wifite
+    from wifite.config import Configuration
+
+    sys.argv = ["wifite", *args]
+    Configuration.initialize(load_interface=False)
+    from wifite.attack.wpa import AttackWPA, Handshake
+    from wifite.tools.aireplay import Aireplay
+
+    bssid = args[args.index("--bssid") + 1].lower()
+    if not shutil.which("tshark"):
+        raise RuntimeError("Install tshark before running the ALFA Active audit")
+    sent = False
+
+    def deauth(_attack, target):
+        nonlocal sent
+        if not sent and target.bssid.lower() == bssid and any(
+            station.station.lower() == client for station in target.clients
+        ):
+            sent = True
+            print(f"\nWifite: sending one directed deauth burst to {client}", flush=True)
+            Aireplay.deauth(bssid, client_mac=client, num_deauths=1, timeout=5)
+
+    def has_handshake(handshake):
+        return select_handshake(handshake.capfile, bssid, client)
+
+    AttackWPA.deauth = deauth
+    Handshake.has_handshake = has_handshake
+    return wifite.main()
+
+
 def main():
     # Linux reparents orphaned helpers to this supervisor instead of PID 1.
     if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
@@ -67,7 +168,13 @@ def main():
 
     duration = sys.argv[1]
     deadline = None if duration == "until-stopped" else time.monotonic() + int(duration)
-    process = subprocess.Popen(sys.argv[2:])
+    command = sys.argv[2:]
+    if command[0] == "--client":
+        client, tool, *args = command[1:]
+        if tool != "wifite":
+            raise ValueError("Directed audit requires Wifite")
+        command = [sys.executable, "-c", sys.orig_argv[sys.orig_argv.index("-c") + 1], "--directed-worker", client, *args]
+    process = subprocess.Popen(command)
     try:
         while not stopped:
             code = process.poll()
@@ -82,4 +189,6 @@ def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--directed-worker":
+        sys.exit(directed_wifite(sys.argv[2], sys.argv[3:]))
     sys.exit(main())

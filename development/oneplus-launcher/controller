@@ -4,7 +4,6 @@ set -o pipefail
 base=/data/adb/nh-open
 state=/dev/.nh-open-launcher
 monitor=$base/wlan/nh-monitor
-monitor_parameters=/sys/module/kiwi_v2/parameters
 scan_results=$base/launcher-scan-results
 channels24='2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462'
 channels5='5180 5200 5220 5240 5745 5765 5785 5805 5825'
@@ -30,9 +29,9 @@ ap_filter() {
 
 cleanup() {
     trap - EXIT HUP INT TERM
-    if [ "$mode" = wifite ] && [ "${monitor_mode:-}" = inject ] && [ -e "$state/ready" ]; then
-        # Disable transmission before waiting for Wifite to stop its tools.
-        echo 0 >"$monitor_parameters/nh_monitor_tx_mode" || true
+    if [ -n "${alfa_restore:-}" ] && alfa_is_same; then
+        # Bring the external radio down before waiting for audit helpers.
+        ip link set "$alfa_iface" down 2>/dev/null || true
     fi
     if [ -n "${child:-}" ]; then
         if [ "$mode" = survey ] || [ "$mode" = wifite ]; then
@@ -52,8 +51,19 @@ cleanup() {
             message 'Kismet could not start. See the session log.'
         fi
     elif [ "$mode" != bluetooth ]; then
-        "$monitor" stop || true
-        wait "$launcher" 2>/dev/null || true
+        if [ -n "${alfa_iface:-}" ]; then
+            if [ -n "${alfa_restore:-}" ] && alfa_is_same; then
+                if ip link set "$alfa_iface" down &&
+                    iw dev "$alfa_iface" set type managed; then
+                    if [ "$alfa_was_up" -eq 1 ]; then ip link set "$alfa_iface" up || alfa_restore_failed=1; fi
+                else
+                    alfa_restore_failed=1
+                fi
+            fi
+        else
+            "$monitor" stop || true
+            wait "$launcher" 2>/dev/null || true
+        fi
         if [ "$mode" = survey ] && [ -n "${access_point:-}" ] && [ -s "$chroot$file" ]; then
             # Airodump's BSSID filter still writes some unassociated control frames.
             scoped="$survey_dir/scoped.pcap"
@@ -67,7 +77,11 @@ cleanup() {
         if [ "${survey_filter_failed:-0}" = 1 ]; then
             message 'Could not scope the survey PCAP to the selected access point. See the session log.'
         elif [ "$mode" = wifite ]; then
-            if [ -n "${wifite_failed:-}" ]; then
+            if [ -n "${alfa_restore_failed:-}" ]; then
+                message 'Could not restore ALFA managed mode. Unplug and reconnect the ALFA.'
+            elif [ -n "${wifite_setup_error:-}" ]; then
+                message "$wifite_setup_error"
+            elif [ -n "${wifite_failed:-}" ]; then
                 message 'Wifite exited with an error. Check NetHunter Terminal.'
             elif [ "${wifite_timed_out:-0}" = 1 ]; then
                 message "Wifite reached its $duration-second limit."
@@ -137,18 +151,67 @@ wait_for_monitor() {
     return 1
 }
 
+# Resolve the interface from its USB device and bound driver, never by wlan number.
+find_alfa() {
+    for intf in /sys/bus/usb/drivers/rtw_8821au/*:*; do
+        [ -d "$intf/net" ] || continue
+        dev=/sys/bus/usb/devices/${intf##*/}
+        dev=${dev%:*}
+        [ "$(cat "$dev/idVendor" 2>/dev/null)" = 0bda ] &&
+            [ "$(cat "$dev/idProduct" 2>/dev/null)" = 0811 ] || continue
+        for net in "$intf"/net/*; do
+            [ -d "$net" ] && printf '%s\n' "${net##*/}"
+        done
+    done
+    return 0
+}
+
+alfa_is_same() {
+    [ "$(cat "/sys/class/net/$alfa_iface/ifindex" 2>/dev/null)" = "$alfa_ifindex" ]
+}
+
+setup_alfa() {
+    alfa_iface=$(find_alfa)
+    case "$alfa_iface" in
+        ''|wlan0|*[!a-zA-Z0-9_.-]*)
+            wifite_setup_error='Connect one AWUS036ACS and load its rtw_8821au driver first.'
+            alfa_iface=unavailable
+            return 1 ;;
+    esac
+    wifite_setup_error='Could not prepare the ALFA. Check the USB connection and selected channel.'
+    alfa_ifindex=$(cat "/sys/class/net/$alfa_iface/ifindex") || return 1
+    info=$(iw dev "$alfa_iface" info) || return 1
+    if ! printf '%s\n' "$info" | grep -q 'type managed$' || iw dev "$alfa_iface" link | grep -q '^Connected'; then
+        wifite_setup_error='Disconnect the ALFA from Wi-Fi and return it to managed mode before auditing.'
+        return 1
+    fi
+    flags=$(cat "/sys/class/net/$alfa_iface/flags") || return 1
+    alfa_was_up=$((flags & 1))
+    alfa_restore=1
+    ip link set "$alfa_iface" down &&
+        iw dev "$alfa_iface" set type monitor &&
+        ip link set "$alfa_iface" up &&
+        iw dev "$alfa_iface" set freq "$frequency" HT20 || return 1
+    unset wifite_setup_error
+}
+
 run_wifite_terminal() {
     frequency=${1:-}
     duration=${2:-}
     target=${3:-}
+    client=${4:-}
     monitor_mode=passive
     mode_label=receive-only
     if [ -n "$target" ]; then
         [ "${#target}" -eq 17 ] &&
             printf '%s\n' "$target" | grep -Eq '^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$' ||
             { echo 'Invalid access-point address.'; return 2; }
-        monitor_mode=inject
-        mode_label=injection-enabled
+        [ "${#client}" -eq 17 ] &&
+            printf '%s\n' "$client" | grep -Eq '^[[:xdigit:]][02468aAcCeE](:[[:xdigit:]]{2}){5}$' &&
+            [ "$client" != 00:00:00:00:00:00 ] || { echo 'Enter a unicast test-client address.'; return 2; }
+        [ "$(printf '%s' "$client" | tr A-F a-f)" != "$(printf '%s' "$target" | tr A-F a-f)" ] ||
+            { echo 'The client and access point must have different addresses.'; return 2; }
+        mode_label=directed-audit
     fi
     case "$frequency" in [0-9][0-9][0-9][0-9]) ;; *) return 2 ;; esac
     case " $channels24 $channels5 " in *" $frequency "*) ;; *) return 2 ;; esac
@@ -169,45 +232,61 @@ run_wifite_terminal() {
     trap cleanup EXIT
     trap 'exit 130' HUP INT TERM
     printf '%s\n' "$mode" >"$state/mode"
-    message 'Preparing nhmon0 for Wifite…'
-    echo 'Preparing the OnePlus monitor interface…'
-    for setup_try in 1 2; do
-        # Binder calls in the monitor helper require a pipe for their output.
-        /system/bin/sh -c '"$@" 2>&1 | /system/bin/cat' sh \
-            "$monitor" run "$monitor_mode" "$frequency" "$monitor_duration" "$$" >"$base/launcher.log" &
-        launcher=$!
-        if wait_for_monitor; then
-            break
-        fi
-        "$monitor" stop || true
-        wait "$launcher" || true
-        if [ "$setup_try" -eq 2 ] || [ -e "$state/stop" ] || [ -d /dev/.nh-open-wlan ] ||
-            ! grep -q 'Device or resource busy' "$base/launcher.log"; then
-            echo 'Could not prepare nhmon0. See View session log in the launcher.'
-            return 1
-        fi
-        echo 'The radio was busy. Retrying monitor setup…'
-        sleep 2
-        [ ! -e "$state/stop" ] || return 0
-    done
+    iface=nhmon0
+    if [ -n "$target" ]; then
+        message 'Preparing the USB ALFA for Wifite…'
+        if ! setup_alfa; then echo "$wifite_setup_error"; return 1; fi
+        iface=$alfa_iface
+    else
+        message 'Preparing nhmon0 for Wifite…'
+        echo 'Preparing the OnePlus monitor interface…'
+        for setup_try in 1 2; do
+            # Binder calls in the monitor helper require a pipe for their output.
+            /system/bin/sh -c '"$@" 2>&1 | /system/bin/cat' sh \
+                "$monitor" run "$monitor_mode" "$frequency" "$monitor_duration" "$$" >"$base/launcher.log" &
+            launcher=$!
+            if wait_for_monitor; then
+                break
+            fi
+            "$monitor" stop || true
+            wait "$launcher" || true
+            if [ "$setup_try" -eq 2 ] || [ -e "$state/stop" ] || [ -d /dev/.nh-open-wlan ] ||
+                ! grep -q 'Device or resource busy' "$base/launcher.log"; then
+                echo 'Could not prepare nhmon0. See View session log in the launcher.'
+                return 1
+            fi
+            echo 'The radio was busy. Retrying monitor setup…'
+            sleep 2
+            [ ! -e "$state/stop" ] || return 0
+        done
+    fi
     if [ "$frequency" -lt 2500 ]; then channel=$(((frequency - 2407) / 5))
     else channel=$(((frequency - 5000) / 5)); fi
     touch "$state/ready"
-    message "Wifite running on channel $channel in $mode_label mode."
+    message "Wifite running on channel $channel in $mode_label mode ($iface)."
     duration_label='until stopped'
     if [ "$duration" != until-stopped ]; then duration_label="up to $duration seconds"; fi
-    printf 'Wifite · nhmon0 · channel %s · %s · %s\n' "$channel" "$mode_label" "$duration_label"
-    set -- wifite -i nhmon0 -c "$channel" --skip-crack
-    if [ "$monitor_mode" = inject ]; then
-        set -- "$@" --bssid "$target"
+    printf 'Wifite · %s · channel %s · %s · %s\n' "$iface" "$channel" "$mode_label" "$duration_label"
+    set -- wifite -i "$iface" -c "$channel" --skip-crack
+    if [ -n "$target" ]; then
+        mkdir -p "$downloads/Wifite" || { wifite_setup_error='Could not create Downloads/NetHunter/Wifite.'; return 1; }
+        set -- --client "$(printf '%s' "$client" | tr A-F a-f)" "$@" --bssid "$target" --wpa --no-wps --no-pmkid --new-hs --wpadt 5 \
+            --hs-dir "$downloads/Wifite"
     else
         set -- "$@" --nodeauths --no-pmkid
     fi
+    exec 3<&0
     "$nh" exec env --default-signal=INT,QUIT python3 -c "$(cat "$base/nh-wifite-session.py")" \
-        "$duration" "$@" </dev/tty &
+        "$duration" "$@" <&3 3<&- &
+    exec 3<&-
     child=$!
     while kill -0 "$child" 2>/dev/null; do
-        if [ -e "$state/stop" ] || ! kill -0 "$launcher" 2>/dev/null; then
+        if [ -e "$state/stop" ]; then
+            return 0
+        fi
+        if [ -n "$target" ]; then
+            if ! alfa_is_same; then wifite_setup_error='The USB ALFA disconnected.'; return 1; fi
+        elif ! kill -0 "$launcher" 2>/dev/null; then
             return 0
         fi
         sleep 1
@@ -422,7 +501,19 @@ usb_restore() {
 
 [ "$(id -u)" = 0 ] || { echo 'Magisk root is required.' >&2; exit 1; }
 case "${1:-status}" in
-    wifite-terminal) run_wifite_terminal "${2:-}" "${3:-}" "${4:-}" ;;
+    wifite-terminal) run_wifite_terminal "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
+    wifite-access-points)
+        cmd wifi list-scan-results | awk '
+            $1 ~ /^[[:xdigit:]:]+$/ && NF >= 6 {
+                for (i = 1; i <= NF; i++) {
+                    if ($i ~ /^\[/) break
+                }
+                if (i > NF || i <= 5) next
+                name = $5
+                for (j = 6; j < i; j++) name = name " " $j
+                print $2 "\t" $1 "\t" name
+            }'
+        ;;
     wifi|wifi-ap|lab|survey|scan|bluetooth|kismet)
         mode=$1
         access_point=
