@@ -91,6 +91,8 @@ Launcher 1.10 was dry-run tested on the stock OnePlus kernel with Wifite 2.8.1. 
 
 Launcher 1.11 restored repeat transmission for Active audit. Dry runs with Wifite 2.8.2 verified native broadcast and directed retries within the selected BSSID, one-device filtering, and the timed and **Until stopped** modes. In a 30-second live Whole AP test on channel 44, a separate Kali receiver captured ALFA broadcast deauth and directed deauth to three clients. Kali captured one client reassociating and exchanging all four EAPOL key messages. The phone reached its time limit without saving a complete exchange in that run. The ALFA returned to managed mode and the phone remained on the stock kernel.
 
+In a follow-up **Until stopped** test on channel 44, moving the ALFA closer to the test client let the OnePlus capture and save all four EAPOL key messages on its stock kernel. A separate Kali receiver captured the same exchange. Wifite ended the audit after saving the capture, and the ALFA returned to managed mode.
+
 ## Build and install
 
 Use JDK 17, Android SDK Platform 35, Android Build Tools 35, and a signing keystore you control. The build uses the Android SDK's AAPT2, D8, zipalign, and apksigner tools. [Android command-line build documentation](https://developer.android.com/tools/aapt2)
