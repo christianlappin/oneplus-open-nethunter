@@ -3,6 +3,7 @@
 import ctypes
 import os
 from pathlib import Path
+import re
 import signal
 import shutil
 import struct
@@ -79,38 +80,52 @@ def snapshot_pcap(source, destination):
     return True
 
 
+def complete_handshake_peer(lines, bssid, client):
+    progress = {}
+    for line in lines:
+        fields = line.lower().split("\t")
+        if len(fields) != 4 or not fields[3].isdecimal():
+            continue
+        sender, receiver, number, counter = fields
+        if number in ("1", "3") and sender == bssid:
+            peer = receiver
+        elif number in ("2", "4") and receiver == bssid:
+            peer = sender
+        else:
+            continue
+        if (peer in (bssid, "00:00:00:00:00:00") or (client is not None and peer != client)
+                or not re.fullmatch(r"[0-9a-f][02468ace](?::[0-9a-f]{2}){5}", peer)):
+            continue
+        counter = int(counter)
+        expected, replay = progress.get(peer, (1, 0))
+        if number == "1":
+            progress[peer] = (2, counter)
+        elif number == str(expected) and (counter > replay if expected == 3 else counter == replay):
+            if expected == 4:
+                return peer
+            progress[peer] = (expected + 1, counter)
+    return None
+
+
 def select_handshake(capfile, bssid, client):
     source = Path(capfile)
     clean = source.with_name(source.name + ".clean")
     scoped = source.with_name(source.name + ".scoped")
-    match = (f"((wlan.sa == {bssid} && wlan.da == {client}) || "
-             f"(wlan.sa == {client} && wlan.da == {bssid})) && wlan.bssid == {bssid}")
-    frames = f"({match} && eapol) || (wlan.bssid == {bssid} && wlan.fc.type_subtype == 0x08)"
     try:
         if not snapshot_pcap(source, clean):
             return False
         tshark = ["tshark", "-n", "-r", str(clean)]
         result = subprocess.run(tshark + [
-            "-Y", f"{match} && eapol", "-T", "fields",
+            "-Y", f"wlan.bssid == {bssid} && eapol", "-T", "fields", "-E", "occurrence=f",
+            "-e", "wlan.sa", "-e", "wlan.da",
             "-e", "wlan_rsna_eapol.keydes.msgnr", "-e", "eapol.keydes.replay_counter",
         ], capture_output=True, text=True, timeout=8, check=True)
-        expected = 1
-        replay = None
-        for line in result.stdout.splitlines():
-            fields = line.split("\t")
-            if len(fields) != 2 or not fields[1].isdecimal():
-                continue
-            number, counter = fields
-            counter = int(counter)
-            if number == "1":
-                expected, replay = 2, counter
-            elif number == str(expected) and (counter > replay if expected == 3 else counter == replay):
-                expected += 1
-                replay = counter
-                if expected == 5:
-                    break
-        if expected != 5:
+        peer = complete_handshake_peer(result.stdout.splitlines(), bssid, client)
+        if peer is None:
             return False
+        pair = (f"(wlan.sa == {bssid} && wlan.da == {peer}) || "
+                f"(wlan.sa == {peer} && wlan.da == {bssid})")
+        frames = f"wlan.bssid == {bssid} && (wlan.fc.type_subtype == 0x08 || (eapol && ({pair})))"
         subprocess.run(tshark + ["-Y", frames, "-F", "pcap", "-w", str(scoped)],
                        capture_output=True, timeout=8, check=True)
         scoped.replace(source)
@@ -120,7 +135,7 @@ def select_handshake(capfile, bssid, client):
         scoped.unlink(missing_ok=True)
 
 
-def directed_wifite(client, args):
+def active_wifite(scope, args):
     # Wifite normally sends a broadcast burst as well as client-specific
     # bursts. Override only the WPA deauth step in this process.
     from wifite import wifite
@@ -132,18 +147,21 @@ def directed_wifite(client, args):
     from wifite.tools.aireplay import Aireplay
 
     bssid = args[args.index("--bssid") + 1].lower()
+    client = None if scope == "whole-ap" else scope
     if not shutil.which("tshark"):
         raise RuntimeError("Install tshark before running the ALFA Active audit")
     sent = False
 
     def deauth(_attack, target):
         nonlocal sent
-        if not sent and target.bssid.lower() == bssid and any(
-            station.station.lower() == client for station in target.clients
-        ):
-            sent = True
-            print(f"\nWifite: sending one directed deauth burst to {client}", flush=True)
-            Aireplay.deauth(bssid, client_mac=client, num_deauths=1, timeout=5)
+        if sent or target.bssid.lower() != bssid:
+            return
+        if client is not None and all(station.station.lower() != client for station in target.clients):
+            return
+        sent = True
+        scope_label = f"directed deauth burst to {client}" if client else f"broadcast deauth burst for {bssid}"
+        print(f"\nWifite: sending one {scope_label}", flush=True)
+        Aireplay.deauth(bssid, client_mac=client, num_deauths=1, timeout=5)
 
     def has_handshake(handshake):
         return select_handshake(handshake.capfile, bssid, client)
@@ -209,7 +227,7 @@ def main():
         tool_index = 1 if discovery else 2
         if command[tool_index] != "wifite":
             raise ValueError("This launcher mode requires Wifite")
-        worker = ["--discovery-worker"] if discovery else ["--directed-worker", command[1]]
+        worker = ["--discovery-worker"] if discovery else ["--active-worker", command[1]]
         command = [sys.executable, "-c", source, *worker, *command[tool_index + 1:]]
     process = subprocess.Popen(command)
     try:
@@ -226,8 +244,8 @@ def main():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--directed-worker":
-        sys.exit(directed_wifite(sys.argv[2], sys.argv[3:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "--active-worker":
+        sys.exit(active_wifite(sys.argv[2], sys.argv[3:]))
     if len(sys.argv) > 1 and sys.argv[1] == "--discovery-worker":
         sys.exit(discovery_wifite(sys.argv[2:]))
     sys.exit(main())

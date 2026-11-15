@@ -212,12 +212,17 @@ run_wifite_terminal() {
         [ "${#target}" -eq 17 ] &&
             printf '%s\n' "$target" | grep -Eq '^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$' ||
             { echo 'Invalid access-point address.'; return 2; }
-        [ "${#client}" -eq 17 ] &&
-            printf '%s\n' "$client" | grep -Eq '^[[:xdigit:]][02468aAcCeE](:[[:xdigit:]]{2}){5}$' &&
-            [ "$client" != 00:00:00:00:00:00 ] || { echo 'Enter a unicast test-client address.'; return 2; }
-        [ "$(printf '%s' "$client" | tr A-F a-f)" != "$(printf '%s' "$target" | tr A-F a-f)" ] ||
-            { echo 'The client and access point must have different addresses.'; return 2; }
-        mode_label=directed-audit
+        if [ "$client" = whole-ap ]; then
+            mode_label=whole-AP-audit
+        else
+            client=$(printf '%s' "$client" | tr A-F a-f)
+            [ "${#client}" -eq 17 ] &&
+                printf '%s\n' "$client" | grep -Eq '^[[:xdigit:]][02468ace](:[[:xdigit:]]{2}){5}$' &&
+                [ "$client" != 00:00:00:00:00:00 ] || { echo 'Enter a unicast test-client address.'; return 2; }
+            [ "$client" != "$(printf '%s' "$target" | tr A-F a-f)" ] ||
+                { echo 'The client and access point must have different addresses.'; return 2; }
+            mode_label=directed-audit
+        fi
     fi
     case "$frequency" in [0-9][0-9][0-9][0-9]) ;; *) return 2 ;; esac
     case " $channels24 $channels5 " in *" $frequency "*) ;; *) return 2 ;; esac
@@ -279,10 +284,10 @@ run_wifite_terminal() {
     set -- wifite -i "$iface" -c "$channel" --skip-crack
     if [ -n "$target" ]; then
         mkdir -p "$downloads/Wifite" || { wifite_setup_error='Could not create Downloads/NetHunter/Wifite.'; return 1; }
-        set -- --client "$(printf '%s' "$client" | tr A-F a-f)" "$@" --bssid "$target" --wpa --no-wps --no-pmkid --new-hs --wpadt 5 \
+        set -- --client "$client" "$@" --bssid "$target" --wpa --no-wps --no-pmkid --new-hs --wpadt 5 \
             --hs-dir "$downloads/Wifite"
     else
-        set -- --discovery "$@" --nodeauths --no-pmkid
+        set -- --discovery "$@" --wpa --nodeauths --no-wps --no-pmkid
     fi
     # The supervisor and Wifite handle terminal interrupts after setup.
     trap ':' INT

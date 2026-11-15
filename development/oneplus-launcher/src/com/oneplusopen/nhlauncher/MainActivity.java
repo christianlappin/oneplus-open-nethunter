@@ -45,6 +45,7 @@ public final class MainActivity extends Activity {
     private static final int ENABLE_BLUETOOTH = 2;
     private static final int MAX_CAPTURE_SECONDS = 1770;
     private static final String MAC_ADDRESS = "([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}";
+    private static final String WHOLE_AP = "whole-ap";
     private static final String CONTROLLER = "/data/adb/nh-open/nh-launcher";
 
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -232,9 +233,11 @@ public final class MainActivity extends Activity {
     private void pickAccessPointAction(int frequency, String address, String name) {
         String[] modes = {"wifi", "lab", "survey"};
         new AlertDialog.Builder(this).setTitle(name + " · " + channelLabel(frequency))
-            .setItems(new String[] {"Capture beacons", "Capture lab traffic", "Airodump-ng survey"},
+            .setItems(new String[] {"Capture beacons", "Capture lab traffic", "Airodump-ng survey", "Wifite Active audit"},
                 (dialog, which) -> {
-                    if (which != 1) {
+                    if (which == 3) {
+                        confirmWifiteAudit(frequency, address, name);
+                    } else if (which != 1) {
                         pickDuration(modes[which], frequency, address, name);
                     } else {
                         new AlertDialog.Builder(this).setTitle("Capture lab traffic")
@@ -426,6 +429,20 @@ public final class MainActivity extends Activity {
     }
 
     private void confirmWifiteAudit(int frequency, String address, String name) {
+        new AlertDialog.Builder(this).setTitle("Active Wifite audit")
+            .setMessage(name + "\n" + channelLabel(frequency) + " · " + address)
+            .setPositiveButton("Target one device", (dialog, which) -> enterWifiteClient(frequency, address, name))
+            .setNeutralButton("Target whole AP", (dialog, which) ->
+                new AlertDialog.Builder(this).setTitle("Target whole AP")
+                    .setMessage(name + "\n" + channelLabel(frequency) + " · " + address
+                        + "\n\nOne broadcast deauth burst may briefly disconnect multiple devices on this access point.")
+                    .setPositiveButton("Choose duration", (confirm, button) ->
+                        pickDuration("wifite", frequency, address, name, WHOLE_AP))
+                    .setNegativeButton("Cancel", null).show())
+            .setNegativeButton("Cancel", null).show();
+    }
+
+    private void enterWifiteClient(int frequency, String address, String name) {
         EditText input = new EditText(this);
         input.setSingleLine(true);
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
@@ -433,7 +450,7 @@ public final class MainActivity extends Activity {
         LinearLayout box = column();
         box.setPadding(dp(24), 0, dp(24), 0);
         box.addView(input);
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Active Wifite audit")
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Target one device")
             .setMessage(name + "\n" + channelLabel(frequency) + " · " + address
                 + "\n\nConnect the ALFA. Use the MAC shown in the test device’s details for this network. "
                 + "Continuing may briefly disconnect that device.")
